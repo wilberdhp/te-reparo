@@ -1,0 +1,407 @@
+// Te Reparo — Esquema Prisma
+// Nota de portabilidad: en el entorno de desarrollo se usa SQLite, que no soporta
+// enums nativos de Prisma ni campos Json. Por eso los enums del PRD se modelan como
+// String y se validan con Zod en servidor (ver src/lib/validaciones.ts), y los campos
+// JSON (datosAntes/datosDespues, detalle) se guardan como String con JSON.stringify.
+// Para desplegar en PostgreSQL: cambiar provider a "postgresql", convertir los String
+// de enums a `enum` nativos y los String JSON a `Json` (ver docs/DEPLOY.md).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ============ Catálogos (enums del PRD como String, validados con Zod) ============
+// Rol:            ADMIN | VENDEDOR | VENDEDOR_ONLINE
+// RamaOperario:   VENDEDOR | INFORMATICO | ELECTRONICO | ADMIN
+// TipoProducto:   VENTA | SERVICIO_ELECTRONICA | SERVICIO_INFORMATICA
+// Moneda:         CUP | USD | EUR
+// TipoPagoOperario: FIJO | PORCENTAJE
+// MetodoPago:     EFECTIVO | TRANSFERENCIA | ZELLE
+// EstadoVenta:    COMPLETADA | DEVUELTA_PARCIAL | DEVUELTA_TOTAL
+// TipoMovimiento: ENTRADA | VENTA | DEVOLUCION_DEFECTUOSO | BAJA_DEFECTUOSO | AJUSTE | TRANSFERENCIA_SALIDA | TRANSFERENCIA_ENTRADA
+// EstadoLiquidacion: ABIERTA | CERRADA
+// TipoGarantia:   REPARACION | REEMPLAZO
+// ResultadoLog:   OK | DENEGADO
+
+model Taller {
+  id        String   @id @default(cuid())
+  nombre    String
+  direccion String
+  telefono  String
+  logoUrl   String?
+  activo    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  usuarios            Usuario[]
+  productos           Producto[]
+  ventas              Venta[]
+  transferenciasOrigen  Transferencia[] @relation("TransferenciaOrigen")
+  transferenciasDestino Transferencia[] @relation("TransferenciaDestino")
+  operarios           OperarioTaller[]
+  liquidaciones       LiquidacionOperario[]
+  logs                AuditLog[]
+}
+
+model Usuario {
+  id           String   @id @default(cuid())
+  nombre       String
+  username     String   @unique
+  passwordHash String
+  rol          String // ADMIN | VENDEDOR | VENDEDOR_ONLINE
+  tallerId     String?
+  operarioId   String? // Enlace usuario→operario (necesario para reglas de liquidación)
+  activo       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  taller            Taller?               @relation(fields: [tallerId], references: [id])
+  operario          Operario?             @relation(fields: [operarioId], references: [id])
+  ventas            Venta[]
+  movimientos       MovimientoInventario[]
+  transferencias    Transferencia[]
+  devoluciones      Devolucion[]
+  logs              AuditLog[]
+  tasasActualizadas TasaCambio[]
+  liquidacionesCerradas LiquidacionOperario[] @relation("LiquidacionCerradaPor")
+}
+
+model Operario {
+  id        String   @id @default(cuid())
+  nombre    String
+  rama      String // VENDEDOR | INFORMATICO | ELECTRONICO | ADMIN
+  activo    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  usuarios      Usuario[]
+  talleres      OperarioTaller[]
+  ventaItems    VentaItem[]
+  lineas        LiquidacionLinea[]
+  pagos         PagoLiquidacion[]
+  ajustes       AjusteLiquidacion[]
+}
+
+model OperarioTaller {
+  operarioId String
+  tallerId   String
+  operario   Operario @relation(fields: [operarioId], references: [id], onDelete: Cascade)
+  taller     Taller   @relation(fields: [tallerId], references: [id], onDelete: Cascade)
+
+  @@id([operarioId, tallerId])
+  @@index([tallerId])
+}
+
+model Producto {
+  id                 String   @id @default(cuid())
+  tallerId           String
+  codigoInterno      String
+  codigoBarras       String
+  categoria          String
+  nombre             String
+  tipo               String // VENTA | SERVICIO_ELECTRONICA | SERVICIO_INFORMATICA
+  cantidad           Int      @default(0) // solo productos; servicios siempre 1 en líneas
+  costo              Decimal  @default(0)
+  unidad             String   @default("u")
+  stockMinimo        Int      @default(0)
+  precio             Decimal  @default(0)
+  monedaPrecio       String   @default("CUP") // CUP | USD | EUR
+  pagoOperarioTipo   String   @default("FIJO") // FIJO | PORCENTAJE
+  pagoOperarioValor  Decimal  @default(0)
+  garantiaDias       Int      @default(0)
+  activo             Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  taller        Taller                 @relation(fields: [tallerId], references: [id])
+  movimientos   MovimientoInventario[]
+  ventaItems    VentaItem[]
+  transferencias Transferencia[]
+
+  @@unique([tallerId, codigoInterno])
+  @@unique([tallerId, codigoBarras])
+  @@index([tallerId, activo])
+  @@index([tallerId, categoria])
+}
+
+model MovimientoInventario {
+  id             String   @id @default(cuid())
+  productoId     String
+  tipo           String // TipoMovimiento
+  cantidad       Int // magnitud; para AJUSTE puede ser negativo
+  costoUnitario  Decimal  @default(0)
+  usuarioId      String?
+  ventaId        String?
+  transferenciaId String?
+  devolucionId   String?
+  nota           String?
+  fecha          DateTime @default(now())
+
+  producto     Producto     @relation(fields: [productoId], references: [id])
+  usuario      Usuario?     @relation(fields: [usuarioId], references: [id])
+  venta        Venta?       @relation(fields: [ventaId], references: [id])
+  transferencia Transferencia? @relation(fields: [transferenciaId], references: [id])
+  devolucion   Devolucion?  @relation(fields: [devolucionId], references: [id])
+  garantias    Garantia[]
+
+  @@index([productoId, fecha])
+  @@index([ventaId])
+  @@index([transferenciaId])
+  @@index([devolucionId])
+}
+
+model Transferencia {
+  id               String   @id @default(cuid())
+  tallerOrigenId  String
+  tallerDestinoId String
+  productoId       String
+  cantidad         Int
+  usuarioId        String?
+  fecha            DateTime @default(now())
+  nota             String?
+
+  tallerOrigen  Taller   @relation("TransferenciaOrigen", fields: [tallerOrigenId], references: [id])
+  tallerDestino Taller   @relation("TransferenciaDestino", fields: [tallerDestinoId], references: [id])
+  producto      Producto @relation(fields: [productoId], references: [id])
+  usuario       Usuario? @relation(fields: [usuarioId], references: [id])
+  movimientos   MovimientoInventario[]
+
+  @@index([productoId])
+  @@index([tallerOrigenId, fecha])
+}
+
+model Cliente {
+  id            String   @id @default(cuid())
+  nombre        String
+  telefono      String?
+  ci            String?
+  fechaRegistro DateTime @default(now())
+
+  ventas Venta[]
+}
+
+model Venta {
+  id                String   @id @default(cuid())
+  codigo            String   @unique
+  tallerId          String
+  clienteId         String?
+  vendedorUsuarioId String
+  estado            String   @default("COMPLETADA") // EstadoVenta
+  fecha             DateTime @default(now())
+  totalCUP          Decimal  @default(0)
+  tasaUSDSnapshot   Decimal  @default(0)
+  tasaEURSnapshot   Decimal  @default(0)
+  ventaMostrador    Boolean  @default(false)
+
+  taller      Taller         @relation(fields: [tallerId], references: [id])
+  cliente     Cliente?       @relation(fields: [clienteId], references: [id])
+  vendedor    Usuario        @relation(fields: [vendedorUsuarioId], references: [id])
+  items       VentaItem[]
+  pagos       PagoVenta[]
+  movimientos MovimientoInventario[]
+  devoluciones Devolucion[]
+
+  @@index([tallerId, fecha])
+  @@index([fecha])
+  @@index([clienteId])
+  @@index([vendedorUsuarioId])
+}
+
+model VentaItem {
+  id                        String   @id @default(cuid())
+  ventaId                   String
+  productoId                String
+  cantidad                  Int
+  precioUnitario            Decimal
+  monedaPrecio              String // CUP | USD | EUR
+  precioUnitarioCUP         Decimal
+  subtotalCUP               Decimal
+  operarioId                String?
+  pagoOperarioTipoSnapshot  String   @default("FIJO")
+  pagoOperarioValorSnapshot Decimal  @default(0)
+  garantiaDiasSnapshot      Int      @default(0)
+  cantidadDevuelta          Int      @default(0)
+  precioOriginal            Decimal?
+  precioEditado             Boolean  @default(false)
+
+  venta     Venta      @relation(fields: [ventaId], references: [id])
+  producto  Producto   @relation(fields: [productoId], references: [id])
+  operario  Operario?  @relation(fields: [operarioId], references: [id])
+  devolucionItems DevolucionItem[]
+  garantias Garantia[]
+
+  @@index([ventaId])
+  @@index([operarioId])
+  @@index([productoId])
+}
+
+model PagoVenta {
+  id            String   @id @default(cuid())
+  ventaId       String
+  metodo        String // EFECTIVO | TRANSFERENCIA | ZELLE
+  moneda        String // CUP | USD | EUR
+  monto         Decimal
+  tasaAplicada  Decimal  @default(1)
+  montoCUP      Decimal
+  referencia    String?
+
+  venta Venta @relation(fields: [ventaId], references: [id])
+
+  @@index([ventaId])
+}
+
+model Devolucion {
+  id        String   @id @default(cuid())
+  ventaId   String
+  usuarioId String?
+  fecha     DateTime @default(now())
+  motivo    String
+  totalCUP  Decimal  @default(0)
+  codigo    String   @unique
+
+  venta   Venta             @relation(fields: [ventaId], references: [id])
+  usuario Usuario?          @relation(fields: [usuarioId], references: [id])
+  items   DevolucionItem[]
+  movimientos MovimientoInventario[]
+  ajustes AjusteLiquidacion[]
+
+  @@index([ventaId])
+  @@index([fecha])
+}
+
+model DevolucionItem {
+  id           String @id @default(cuid())
+  devolucionId String
+  ventaItemId  String
+  cantidad     Int
+  motivo       String
+  destino      String @default("DEFECTUOSO") // siempre DEFECTUOSO en MVP
+
+  devolucion Devolucion @relation(fields: [devolucionId], references: [id])
+  ventaItem  VentaItem  @relation(fields: [ventaItemId], references: [id])
+
+  @@index([devolucionId])
+}
+
+model Garantia {
+  id                    String   @id @default(cuid())
+  ventaItemId           String
+  fechaReclamo          DateTime @default(now())
+  descripcion           String
+  tipo                  String // REPARACION | REEMPLAZO
+  movimientoInventarioId String?
+
+  ventaItem VentaItem            @relation(fields: [ventaItemId], references: [id])
+  movimiento MovimientoInventario? @relation(fields: [movimientoInventarioId], references: [id])
+
+  @@index([ventaItemId])
+}
+
+model LiquidacionOperario {
+  id          String   @id @default(cuid())
+  tallerId    String
+  fecha       DateTime // día (normalizado a 00:00)
+  estado      String   @default("ABIERTA") // ABIERTA | CERRADA
+  totalCUP    Decimal  @default(0)
+  cerradaPor  String?
+  fechaCierre DateTime?
+
+  taller    Taller              @relation(fields: [tallerId], references: [id])
+  cerradaPorUsuario Usuario?    @relation("LiquidacionCerradaPor", fields: [cerradaPor], references: [id])
+  lineas    LiquidacionLinea[]
+  pagos     PagoLiquidacion[]
+  ajustes   AjusteLiquidacion[]
+
+  @@unique([tallerId, fecha])
+  @@index([fecha])
+}
+
+model LiquidacionLinea {
+  id            String  @id @default(cuid())
+  liquidacionId String
+  operarioId    String
+  montoCUP      Decimal @default(0)
+  detalle       String  @default("{}") // JSON serializado
+
+  liquidacion LiquidacionOperario @relation(fields: [liquidacionId], references: [id])
+  operario    Operario            @relation(fields: [operarioId], references: [id])
+
+  @@index([liquidacionId])
+  @@index([operarioId])
+}
+
+model PagoLiquidacion {
+  id                String   @id @default(cuid())
+  liquidacionId     String
+  operarioId        String
+  montoCUP          Decimal  @default(0)
+  fechaPago         DateTime @default(now())
+  comprobanteCodigo String   @unique
+
+  liquidacion LiquidacionOperario @relation(fields: [liquidacionId], references: [id])
+  operario    Operario            @relation(fields: [operarioId], references: [id])
+
+  @@index([liquidacionId])
+  @@index([operarioId])
+}
+
+model AjusteLiquidacion {
+  id            String  @id @default(cuid())
+  liquidacionId String
+  operarioId    String
+  montoCUP      Decimal @default(0) // negativo
+  motivo        String
+  devolucionId  String?
+
+  liquidacion LiquidacionOperario @relation(fields: [liquidacionId], references: [id])
+  operario    Operario            @relation(fields: [operarioId], references: [id])
+  devolucion  Devolucion?         @relation(fields: [devolucionId], references: [id])
+
+  @@index([liquidacionId])
+  @@index([operarioId])
+}
+
+model TasaCambio {
+  id             String   @id @default(cuid())
+  moneda         String // USD | EUR
+  valorCUP       Decimal
+  fechaVigencia  DateTime @default(now())
+  actualizadoPor String?
+
+  usuario Usuario? @relation(fields: [actualizadoPor], references: [id])
+
+  @@index([moneda, fechaVigencia])
+}
+
+model AuditLog {
+  id            String   @id @default(cuid())
+  usuarioId     String?
+  tallerId      String?
+  accion        String
+  entidad       String
+  entidadId     String?
+  datosAntes    String? // JSON serializado
+  datosDespues  String? // JSON serializado
+  ip            String?
+  userAgent     String?
+  resultado     String // OK | DENEGADO
+  fecha         DateTime @default(now())
+
+  usuario Usuario? @relation(fields: [usuarioId], references: [id])
+  taller  Taller?  @relation(fields: [tallerId], references: [id])
+
+  @@index([fecha])
+  @@index([usuarioId, fecha])
+  @@index([entidad, fecha])
+}
+
+// Ajustes globales de la aplicación (ticket, porcentajeAdmin) — requeridos por el PRD §5.9
+model Ajuste {
+  clave     String   @id
+  valor     String
+  updatedAt DateTime @updatedAt
+}

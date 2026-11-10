@@ -1,0 +1,222 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ============================================================
+   Te Reparo — Identidad visual (logotipo: Rojo, Blanco y Negro)
+   brand.red  #E60000 · red-hover #CC0000 · red-light #FFEBEB
+   brand.black #121212 · dark #1E1E1E · gray #F5F5F5 · border #E0E0E0
+   Semánticos: success #10B981 · warning #F59E0B · info #3B82F6
+   ============================================================ */
+@theme {
+  --color-brand-red: #e60000;
+  --color-brand-red-hover: #cc0000;
+  --color-brand-red-light: #ffebeb;
+  --color-brand-black: #121212;
+  --color-brand-dark: #1e1e1e;
+  --color-brand-gray: #f5f5f5;
+  --color-brand-border: #e0e0e0;
+  --color-brand-white: #ffffff;
+  --color-success: #10b981;
+  --color-success-light: #ecfdf5;
+  --color-warning: #f59e0b;
+  --color-warning-light: #fffbeb;
+  --color-info: #3b82f6;
+  --color-info-light: #eff6ff;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-inter);
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", monospace;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+/* ---------- Modo claro (por defecto): fondo gris claro, tarjetas blancas ---------- */
+:root {
+  --radius: 0.625rem;
+  --background: #f5f5f5; /* brand.gray */
+  --foreground: #121212; /* brand.black */
+  --card: #ffffff; /* brand.white */
+  --card-foreground: #121212;
+  --popover: #ffffff;
+  --popover-foreground: #121212;
+  --primary: #e60000; /* brand.red */
+  --primary-foreground: #ffffff;
+  --secondary: #f0f0f0;
+  --secondary-foreground: #121212;
+  --muted: #efefef;
+  --muted-foreground: #5c5c5c;
+  --accent: #ffebeb; /* brand.red-light */
+  --accent-foreground: #991b1b;
+  --destructive: #cc0000; /* brand.red-hover */
+  --border: #e0e0e0; /* brand.border */
+  --input: #d6d6d6;
+  --ring: #e60000; /* foco visible de teclado: anillo rojo con offset */
+  --chart-1: #e60000;
+  --chart-2: #10b981;
+  --chart-3: #f59e0b;
+  --chart-4: #3b82f6;
+  --chart-5: #737373;
+  --sidebar: #ffffff;
+  --sidebar-foreground: #121212;
+  --sidebar-primary: #e60000;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #ffebeb;
+  --sidebar-accent-foreground: #991b1b;
+  --sidebar-border: #e0e0e0;
+  --sidebar-ring: #e60000;
+}
+
+/* ---------- Modo oscuro: fondo negro, tarjetas gris muy oscuro, texto blanco ---------- */
+.dark {
+  --background: #121212; /* brand.black */
+  --foreground: #ffffff; /* brand.white */
+  --card: #1e1e1e; /* brand.dark */
+  --card-foreground: #ffffff;
+  --popover: #1e1e1e;
+  --popover-foreground: #ffffff;
+  --primary: #e60000;
+  --primary-foreground: #ffffff;
+  --secondary: #2a2a2a;
+  --secondary-foreground: #ffffff;
+  --muted: #282828;
+  --muted-foreground: #a6a6a6;
+  --accent: #3a1a1a;
+  --accent-foreground: #ffd7d7;
+  --destructive: #ff4d4d;
+  --border: hsl(0 0% 100% / 12%);
+  --input: hsl(0 0% 100% / 16%);
+  --ring: #ff3b3b;
+  --chart-1: #ff3b3b;
+  --chart-2: #10b981;
+  --chart-3: #f59e0b;
+  --chart-4: #3b82f6;
+  --chart-5: #a6a6a6;
+  --sidebar: #1e1e1e;
+  --sidebar-foreground: #ffffff;
+  --sidebar-primary: #e60000;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #3a1a1a;
+  --sidebar-accent-foreground: #ffd7d7;
+  --sidebar-border: hsl(0 0% 100% / 12%);
+  --sidebar-ring: #ff3b3b;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-variant-numeric: tabular-nums;
+  }
+  /* Foco de teclado siempre visible (WCAG): nunca outline:none sin reemplazo */
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-ring;
+  }
+}
+
+/* ---------- Skip link (accesibilidad) ---------- */
+.saltar-enlace {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 100;
+}
+.saltar-enlace:focus {
+  left: 8px;
+  top: 8px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: #e60000;
+  color: #ffffff;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+/* ---------- Números tabulares para dinero en el POS y tablas ---------- */
+.num-tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Scrollbars finos para listas largas ---------- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #c7c7c7 transparent;
+}
+.dark * {
+  scrollbar-color: #4a4a4a transparent;
+}
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #c7c7c7;
+  border-radius: 4px;
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: #4a4a4a;
+}
+
+/* ===== Impresión de tickets (58/80 mm) — solo se imprime .solo-impresion ===== */
+@media print {
+  body * {
+    visibility: hidden !important;
+  }
+  .solo-impresion,
+  .solo-impresion * {
+    visibility: visible !important;
+  }
+  .solo-impresion {
+    position: fixed !important;
+    left: 0 !important;
+    top: 0 !important;
+    margin: 0 !important;
+    padding: 2mm !important;
+    box-shadow: none !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+  @page {
+    margin: 4mm;
+  }
+}

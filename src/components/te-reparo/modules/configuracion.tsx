@@ -1,5 +1,5 @@
 'use client'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -10,13 +10,16 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Switch } from '@/components/ui/switch'
+import { Textarea } from '@/components/ui/textarea'
 import { toast } from 'sonner'
-import { Plus, Pencil, KeyRound, Download, Save } from 'lucide-react'
+import { Plus, Pencil, KeyRound, Download, Save, FileText, Eye } from 'lucide-react'
 import { api, descargar } from '@/lib/api-client'
 import { useApp } from '@/lib/store'
 import { fmt, fmtFechaHora, ROL_LABEL, RAMA_LABEL } from '@/lib/formato'
+import { VARIABLES_PLANTILLA, CONTEXTO_MOCK, variablesUsadas } from '@/lib/plantillas'
 import { useGuardarConCtrlS } from '@/hooks/use-ctrl-s'
 import { Kbd } from '../kbd'
+import { TicketPlantilla } from '../ticket'
 
 interface Taller { id: string; nombre: string; direccion: string; telefono: string; activo: boolean }
 interface Usuario {
@@ -36,6 +39,15 @@ interface Operario {
   talleres: Array<{ tallerId: string }>
 }
 interface Tasa { id: string; moneda: string; valorCUP: number; fechaVigencia: string; usuario: { username: string } | null }
+interface Plantilla {
+  id: string
+  nombre: string
+  contenido: string
+  activo: boolean
+  usos: number
+  createdAt: string
+  updatedAt: string
+}
 
 const ROLES = ['ADMIN', 'VENDEDOR', 'VENDEDOR_ONLINE']
 const RAMAS = ['VENDEDOR', 'INFORMATICO', 'ELECTRONICO', 'ADMIN']
@@ -73,13 +85,24 @@ export function Configuracion() {
   const [modalPassword, setModalPassword] = useState(false)
   const [formPassword, setFormPassword] = useState({ usuarioId: '', username: '', password: '' })
 
+  // ---------- Plantillas de Tickets (PROMPT DE ACTUALIZACIÓN §4) ----------
+  const [plantillas, setPlantillas] = useState<Plantilla[]>([])
+  const [modalPlantilla, setModalPlantilla] = useState(false)
+  const [modalPreview, setModalPreview] = useState(false)
+  const [plantillaEdit, setPlantillaEdit] = useState<{
+    id: string | null
+    datos: { nombre: string; contenido: string; activo: boolean }
+  }>({ id: null, datos: { nombre: '', contenido: '', activo: true } })
+  const contenidoRef = useRef<HTMLTextAreaElement>(null)
+
   const cargarTodo = useCallback(async () => {
     try {
-      const [rTalleres, rUsuarios, rOperarios, rTasas] = await Promise.all([
+      const [rTalleres, rUsuarios, rOperarios, rTasas, rPlantillas] = await Promise.all([
         api.get<{ talleres: Taller[] }>('/api/talleres'),
         api.get<{ usuarios: Usuario[] }>('/api/usuarios'),
         api.get<{ operarios: Operario[] }>('/api/operarios'),
         api.get<{ tasas: { USD: number; EUR: number }; historial: Tasa[] }>('/api/tasas'),
+        api.get<{ plantillas: Plantilla[] }>('/api/plantillas?todas=true'),
       ])
       setTalleres(rTalleres.talleres)
       setUsuarios(rUsuarios.usuarios)
@@ -87,6 +110,7 @@ export function Configuracion() {
       setTasas(rTasas.historial)
       setTasasVigentes(rTasas.tasas)
       setFormTasas({ USD: String(rTasas.tasas.USD), EUR: String(rTasas.tasas.EUR) })
+      setPlantillas(rPlantillas.plantillas)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Error al cargar configuración')
     }
@@ -216,6 +240,63 @@ export function Configuracion() {
     }
   }
 
+  // ---------- Plantillas de Tickets ----------
+  async function guardarPlantilla() {
+    const d = plantillaEdit.datos
+    if (d.nombre.trim().length < 2) return toast.error('Nombre muy corto')
+    if (d.contenido.trim().length < 3) return toast.error('Escriba el contenido de la plantilla')
+    try {
+      if (plantillaEdit.id) {
+        await api.patch(`/api/plantillas?id=${plantillaEdit.id}`, {
+          nombre: d.nombre.trim(),
+          contenido: d.contenido,
+          activo: d.activo,
+        })
+        toast.success('Plantilla actualizada')
+      } else {
+        await api.post('/api/plantillas', {
+          nombre: d.nombre.trim(),
+          contenido: d.contenido,
+          activo: d.activo,
+        })
+        toast.success('Plantilla creada')
+      }
+      setModalPlantilla(false)
+      cargarTodo()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Error')
+    }
+  }
+
+  /** Inserta una variable {{...}} en el cursor del textarea (o al final). */
+  function insertarVariable(variable: string) {
+    const el = contenidoRef.current
+    const contenido = plantillaEdit.datos.contenido
+    if (!el) {
+      setPlantillaEdit((p) => ({ ...p, datos: { ...p.datos, contenido: p.datos.contenido + variable } }))
+      return
+    }
+    const ini = el.selectionStart ?? contenido.length
+    const fin = el.selectionEnd ?? ini
+    const nuevo = contenido.slice(0, ini) + variable + contenido.slice(fin)
+    setPlantillaEdit((p) => ({ ...p, datos: { ...p.datos, contenido: nuevo } }))
+    requestAnimationFrame(() => {
+      el.focus()
+      el.setSelectionRange(ini + variable.length, ini + variable.length)
+    })
+  }
+
+  /** Activa/desactiva una plantilla (los VENTA ya impresos guardan su copia). */
+  async function alternarPlantilla(p: Plantilla) {
+    try {
+      await api.patch(`/api/plantillas?id=${p.id}`, { activo: !p.activo })
+      setPlantillas((ps) => ps.map((x) => (x.id === p.id ? { ...x, activo: !x.activo } : x)))
+      toast.success(!p.activo ? 'Plantilla activada' : 'Plantilla desactivada')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Error')
+    }
+  }
+
   // Ctrl+S guarda el formulario/modal abierto (o la pestaña de ajustes)
   useGuardarConCtrlS(
     () => {
@@ -223,9 +304,10 @@ export function Configuracion() {
       else if (modalUsuario) guardarUsuario()
       else if (modalOperario) guardarOperario()
       else if (modalPassword) confirmarResetPassword()
+      else if (modalPlantilla) guardarPlantilla()
       else if (tab === 'ajustes') guardarAjustes()
     },
-    modalTaller || modalUsuario || modalOperario || modalPassword || tab === 'ajustes'
+    modalTaller || modalUsuario || modalOperario || modalPassword || modalPlantilla || tab === 'ajustes'
   )
 
   return (
@@ -246,6 +328,7 @@ export function Configuracion() {
           <TabsTrigger value="usuarios">Usuarios</TabsTrigger>
           <TabsTrigger value="operarios">Operarios</TabsTrigger>
           <TabsTrigger value="tasas">Tasas de cambio</TabsTrigger>
+          <TabsTrigger value="plantillas">Plantillas de Tickets</TabsTrigger>
           <TabsTrigger value="ajustes">Ticket y ajustes</TabsTrigger>
         </TabsList>
 
@@ -499,6 +582,102 @@ export function Configuracion() {
                       <TableCell className="text-xs">{t.usuario?.username ?? 'sistema'}</TableCell>
                     </TableRow>
                   ))}
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* ============ PLANTILLAS DE TICKETS ============ */}
+        <TabsContent value="plantillas" className="space-y-3">
+          <div className="flex justify-between items-center flex-wrap gap-2">
+            <p className="text-sm text-muted-foreground max-w-xl">
+              Texto de los tickets con variables <code className="text-xs">{'{{...}}'}</code> que se reemplazan al
+              imprimir con los datos reales de la venta. Si el vendedor no elige ninguna, se usa el diseño por
+              defecto del sistema.
+            </p>
+            <Button
+              size="sm"
+              onClick={() => {
+                setPlantillaEdit({ id: null, datos: { nombre: '', contenido: '', activo: true } })
+                setModalPlantilla(true)
+              }}
+            >
+              <Plus className="h-4 w-4 mr-1" /> Nueva plantilla
+            </Button>
+          </div>
+          <Card>
+            <CardContent className="p-0 overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Nombre</TableHead>
+                    <TableHead>Variables</TableHead>
+                    <TableHead className="text-right">Usos (ventas)</TableHead>
+                    <TableHead>Actualizada</TableHead>
+                    <TableHead>Activa</TableHead>
+                    <TableHead className="text-right">Acciones</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {plantillas.map((p) => (
+                    <TableRow key={p.id}>
+                      <TableCell className="font-medium">
+                        <span className="flex items-center gap-1.5">
+                          <FileText className="h-4 w-4 text-brand-red shrink-0" aria-hidden />
+                          {p.nombre}
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className="text-xs">
+                          {variablesUsadas(p.contenido).length} usadas
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-right num-tabular">{p.usos}</TableCell>
+                      <TableCell className="text-xs">{fmtFechaHora(p.updatedAt)}</TableCell>
+                      <TableCell>
+                        <Switch
+                          checked={p.activo}
+                          onCheckedChange={() => alternarPlantilla(p)}
+                          aria-label={`Activar o desactivar ${p.nombre}`}
+                        />
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex justify-end gap-1">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            title="Vista previa con datos de prueba"
+                            onClick={() => {
+                              setPlantillaEdit({ id: p.id, datos: { nombre: p.nombre, contenido: p.contenido, activo: p.activo } })
+                              setModalPreview(true)
+                            }}
+                            aria-label={`Vista previa de ${p.nombre}`}
+                          >
+                            <Eye className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => {
+                              setPlantillaEdit({ id: p.id, datos: { nombre: p.nombre, contenido: p.contenido, activo: p.activo } })
+                              setModalPlantilla(true)
+                            }}
+                            aria-label={`Editar ${p.nombre}`}
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {plantillas.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
+                        Sin plantillas. Cree la primera («Recepción de Equipo», «Venta de Accesorio»…).
+                      </TableCell>
+                    </TableRow>
+                  )}
                 </TableBody>
               </Table>
             </CardContent>
@@ -775,6 +954,115 @@ export function Configuracion() {
               </Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      {/* ============ Modal plantilla de ticket (editor) ============ */}
+      <Dialog open={modalPlantilla} onOpenChange={setModalPlantilla}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{plantillaEdit.id ? 'Editar plantilla de ticket' : 'Nueva plantilla de ticket'}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div>
+              <Label htmlFor="pl-nombre">Nombre (ej: «Recepción de Equipo»)</Label>
+              <Input
+                id="pl-nombre"
+                value={plantillaEdit.datos.nombre}
+                onChange={(e) => setPlantillaEdit((p) => ({ ...p, datos: { ...p.datos, nombre: e.target.value } }))}
+                maxLength={120}
+              />
+            </div>
+            <div>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="pl-contenido">Contenido (los saltos de línea se respetan al imprimir)</Label>
+                <span className="text-xs text-muted-foreground num-tabular">
+                  {plantillaEdit.datos.contenido.length}/5000
+                </span>
+              </div>
+              <Textarea
+                id="pl-contenido"
+                ref={contenidoRef}
+                className="font-mono text-xs min-h-[220px]"
+                maxLength={5000}
+                value={plantillaEdit.datos.contenido}
+                onChange={(e) => setPlantillaEdit((p) => ({ ...p, datos: { ...p.datos, contenido: e.target.value } }))}
+                aria-label="Contenido de la plantilla"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <p className="text-xs font-medium">Insertar variable en el cursor:</p>
+              {Object.entries(
+                VARIABLES_PLANTILLA.reduce<Record<string, typeof VARIABLES_PLANTILLA>>((acc, v) => {
+                  acc[v.grupo] = [...(acc[v.grupo] ?? []), v]
+                  return acc
+                }, {})
+              ).map(([grupo, vars]) => (
+                <div key={grupo} className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-[10px] uppercase text-muted-foreground w-14 shrink-0">{grupo}</span>
+                  {vars.map((v) => (
+                    <button
+                      key={v.variable}
+                      type="button"
+                      onClick={() => insertarVariable(v.variable)}
+                      title={v.descripcion}
+                      className="text-[11px] font-mono px-1.5 py-0.5 rounded border bg-card hover:border-brand-red hover:text-brand-red transition-colors"
+                    >
+                      {v.variable}
+                    </button>
+                  ))}
+                </div>
+              ))}
+              <p className="text-[11px] text-muted-foreground">
+                Las variables se reemplazan al imprimir. En venta de mostrador, {'{{cliente_nombre}}'} imprime
+                «Consumidor Final». Desconocidas se dejan tal cual.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Switch
+                id="pl-activo"
+                checked={plantillaEdit.datos.activo}
+                onCheckedChange={(v) => setPlantillaEdit((p) => ({ ...p, datos: { ...p.datos, activo: v } }))}
+              />
+              <Label htmlFor="pl-activo">Activa (visible en el selector del POS)</Label>
+            </div>
+          </div>
+          <DialogFooter className="gap-2 sm:justify-between">
+            <Button type="button" variant="outline" onClick={() => setModalPreview(true)} disabled={plantillaEdit.datos.contenido.trim().length < 3}>
+              <Eye className="h-4 w-4 mr-1" /> Vista previa
+            </Button>
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={() => setModalPlantilla(false)}>
+                Cancelar
+              </Button>
+              <Button onClick={guardarPlantilla} className="bg-brand-red hover:bg-brand-red-hover">
+                Guardar <Kbd className="ml-2 border-white/40 bg-white/15 text-white">Ctrl</Kbd>+<Kbd className="border-white/40 bg-white/15 text-white">S</Kbd>
+              </Button>
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ============ Modal vista previa (datos de prueba) ============ */}
+      <Dialog open={modalPreview} onOpenChange={setModalPreview}>
+        <DialogContent className="max-w-fit p-0 overflow-auto bg-muted border-0">
+          <DialogHeader className="sr-only">
+            <DialogTitle>Vista previa del ticket</DialogTitle>
+          </DialogHeader>
+          <div className="p-4 max-h-[80vh] overflow-auto">
+            <div className="bg-white shadow-lg rounded-sm text-black" style={{ width: `${ajustesGlobal.ticketAncho ?? '58'}mm` }}>
+              <TicketPlantilla
+                contenido={plantillaEdit.datos.contenido}
+                contexto={CONTEXTO_MOCK}
+                ancho={ajustesGlobal.ticketAncho ?? '58'}
+              />
+            </div>
+          </div>
+          <div className="flex justify-center p-3 bg-card border-t">
+            <Button variant="outline" onClick={() => setModalPreview(false)}>
+              Cerrar
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

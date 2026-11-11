@@ -196,10 +196,12 @@ model Venta {
   tasaUSDSnapshot   Decimal  @default(0)
   tasaEURSnapshot   Decimal  @default(0)
   ventaMostrador    Boolean  @default(false)
+  plantillaId       String? // plantilla de ticket usada al imprimir (null → diseño por defecto)
 
   taller      Taller         @relation(fields: [tallerId], references: [id])
   cliente     Cliente?       @relation(fields: [clienteId], references: [id])
   vendedor    Usuario        @relation(fields: [vendedorUsuarioId], references: [id])
+  plantilla   PlantillaTicket? @relation(fields: [plantillaId], references: [id])
   items       VentaItem[]
   pagos       PagoVenta[]
   movimientos MovimientoInventario[]
@@ -227,6 +229,12 @@ model VentaItem {
   cantidadDevuelta          Int      @default(0)
   precioOriginal            Decimal?
   precioEditado             Boolean  @default(false)
+  // Costo interno del repuesto/servicio (NO suma al total del cliente; se usa para
+  // ganancia y para descontar la base del pago PORCENTAJE del operario).
+  // Se ingresa en la moneda del ítem (monedaPrecio) y se convierte a CUP con la
+  // tasa snapshot de la venta para el cálculo de pagos.
+  costoAdicional            Decimal? @default(0)
+  descripcionAdicional       String?  // notas por línea: IMEI, falla, color, etc.
 
   venta     Venta      @relation(fields: [ventaId], references: [id])
   producto  Producto   @relation(fields: [productoId], references: [id])
@@ -397,6 +405,23 @@ model AuditLog {
   @@index([fecha])
   @@index([usuarioId, fecha])
   @@index([entidad, fecha])
+}
+
+// Plantillas de texto para tickets (Configuración → Plantillas de Tickets, solo ADMIN).
+// El contenido admite variables dinámicas {{...}} que el motor de reemplazo
+// (src/lib/plantillas.ts) resuelve al imprimir. Los saltos de línea escritos
+// por el administrador se respetan tal cual al imprimir.
+// Nota SQLite: `contenido` es String (SQLite no tiene @db.Text); en PostgreSQL
+// usar `String @db.Text`.
+model PlantillaTicket {
+  id        String   @id @default(cuid())
+  nombre    String // Ej: "Recepción de Equipo", "Venta de Accesorio"
+  contenido String
+  activo    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  ventas Venta[]
 }
 
 // Ajustes globales de la aplicación (ticket, porcentajeAdmin) — requeridos por el PRD §5.9

@@ -110,6 +110,7 @@ export const clienteSchema = z.object({
 export const ventaSchema = z.object({
   tallerId: z.string(),
   clienteId: z.string().nullable().optional(),
+  plantillaId: z.string().nullable().optional(), // plantilla de ticket elegida en el POS
   items: z
     .array(
       z.object({
@@ -117,6 +118,11 @@ export const ventaSchema = z.object({
         cantidad: z.number().int().positive(),
         precioUnitario: zDecimalPositivo.nullable().optional(), // edición de precio
         operarioId: z.string().nullable().optional(),
+        // Costo interno (moneda del ítem): NO suma al total del cliente; sirve para
+        // ganancia y para descontar la base del pago PORCENTAJE. Se admite costo
+        // mayor que el precio de venta (pérdida asumida por el taller).
+        costoAdicional: zDecimalNoNeg.nullable().optional(),
+        descripcionAdicional: z.string().max(500, 'La nota de línea admite hasta 500 caracteres').nullable().optional(),
       })
     )
     .min(1, 'La venta necesita al menos una línea'),
@@ -169,4 +175,22 @@ export const ajustesSchema = z.object({
 export const cerrarLiquidacionSchema = z.object({
   tallerId: z.string(),
   fecha: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Fecha inválida'),
+})
+
+export const plantillaSchema = z.object({
+  nombre: z.string().min(2, 'Nombre muy corto').max(120),
+  contenido: z.string().min(3, 'La plantilla necesita contenido').max(5000),
+  activo: z.boolean().optional(),
+})
+
+export const plantillaUpdateSchema = plantillaSchema.partial()
+
+/** Auditoría de acciones del POS en el carrito (antes de confirmar la venta). */
+export const logPosSchema = z.object({
+  accion: z.enum(['MODIFICAR_COSTO_ITEM', 'AGREGAR_NOTA_ITEM']),
+  productoId: z.string(),
+  productoNombre: z.string().min(1).max(160),
+  tallerId: z.string().nullable().optional(),
+  antes: z.record(z.string(), z.unknown()).nullable().optional(),
+  despues: z.record(z.string(), z.unknown()).nullable().optional(),
 })

@@ -18,6 +18,8 @@ export interface ItemLiquidacion {
   operarioId: string | null
   cantidad: number
   subtotalCUP: Decimal
+  /** Costo interno de la línea ya convertido a CUP (tasa snapshot de la venta). */
+  costoAdicionalCUP?: Decimal | null
   pagoOperarioTipoSnapshot: string
   pagoOperarioValorSnapshot: Decimal
 }
@@ -84,6 +86,7 @@ function acumuladoIndividual(operarioId: string, ventas: VentaLiquidacion[]): { 
             valor: it.pagoOperarioValorSnapshot,
             cantidad: it.cantidad,
             subtotalCUP: it.subtotalCUP,
+            costoAdicionalCUP: it.costoAdicionalCUP,
             operarioAsignado: true,
           })
         )
@@ -127,6 +130,7 @@ export function calcularLiquidacion(input: {
                 valor: it.pagoOperarioValorSnapshot,
                 cantidad: it.cantidad,
                 subtotalCUP: it.subtotalCUP,
+                costoAdicionalCUP: it.costoAdicionalCUP,
                 operarioAsignado: true,
               })
             )
@@ -174,7 +178,7 @@ export function calcularLiquidacion(input: {
           tipo: 'Acumulado individual por líneas asignadas',
           lineas: ind.lineas,
           repartoEquitativo: repartoEquitativo.toFixed(2), // solo referencia
-          formula: 'Σ pagoOperario snapshot (FIJO×cant | %×subtotal)',
+          formula: 'Σ pagoOperario snapshot (FIJO×cant | %×(subtotal−costo int.))',
         },
       }
     } else if (op.rama === 'ADMIN') {

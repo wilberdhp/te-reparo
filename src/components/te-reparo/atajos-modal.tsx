@@ -6,6 +6,8 @@ import {
   ATAJOS_GLOBAL,
   ATAJOS_POS,
   ATAJOS_TABLAS,
+  NOTA_CTRL_C,
+  NOTA_CTRL_N,
   NOTA_CTRL_TAB,
   TITULO_AMBITO,
   type DefAtajo,
@@ -45,6 +47,8 @@ export function AtajosModal({ abierto, onAbrirCambio }: { abierto: boolean; onAb
           <Grupo titulo={TITULO_AMBITO.tablas} atajos={ATAJOS_TABLAS} />
         </div>
         <p className="text-xs text-muted-foreground border-t pt-3 mt-1">{NOTA_CTRL_TAB}</p>
+        <p className="text-xs text-muted-foreground">{NOTA_CTRL_N}</p>
+        <p className="text-xs text-muted-foreground">{NOTA_CTRL_C}</p>
         <p className="text-xs text-muted-foreground">
           Los atajos con <Kbd>Alt</Kbd> funcionan incluso mientras escribe en un campo de texto.
         </p>

@@ -6,17 +6,18 @@ function venta(
   id: string,
   total: string,
   vendedorUsuarioId: string,
-  items: Array<[string | null, number, string, string, string]>
+  items: Array<[string | null, number, string, string, string, string?]>
 ) {
   return {
     id,
     codigo: id,
     totalCUP: D(total),
     vendedorUsuarioId,
-    items: items.map(([operarioId, cantidad, subtotal, tipo, valor]) => ({
+    items: items.map(([operarioId, cantidad, subtotal, tipo, valor, costoAdicional]) => ({
       operarioId,
       cantidad,
       subtotalCUP: D(subtotal),
+      costoAdicionalCUP: D(costoAdicional ?? 0),
       pagoOperarioTipoSnapshot: tipo,
       pagoOperarioValorSnapshot: D(valor),
     })),
@@ -137,5 +138,51 @@ describe('Liquidación diaria por rama (PRD §4.6)', () => {
     expect(v1?.montoCUP.toNumber()).toBe(0)
     const tec = r.lineas.filter((l) => l.operarioId === 'op-inf' || l.operarioId === 'op-elec')
     expect(tec.length).toBe(2) // siguen apareciendo con 0
+  })
+})
+
+describe('Liquidación con costoAdicional (PROMPT DE ACTUALIZACIÓN §2.2)', () => {
+  test('PORCENTAJE: el costo interno descuenta la base del pago del técnico', () => {
+    const ventas = [
+      venta('v1', '5000', 'usr-v1', [
+        ['op-inf', 1, '2000', 'PORCENTAJE', '50', '500'], // (2000 − 500) × 50% = 750
+      ]),
+    ]
+    const r = calcularLiquidacion({ ventas, operarios, ajustes: [], porcentajeAdmin: D(0) })
+    const inf = r.lineas.find((l) => l.operarioId === 'op-inf')
+    expect(inf?.montoCUP.toString()).toBe('750')
+  })
+
+  test('PORCENTAJE: costo que provoca base negativa → pago 0 (no negativo)', () => {
+    const ventas = [
+      venta('v1', '5000', 'usr-v1', [
+        ['op-elec', 1, '1000', 'PORCENTAJE', '40', '2500'], // (1000 − 2500) < 0 → 0
+      ]),
+    ]
+    const r = calcularLiquidacion({ ventas, operarios, ajustes: [], porcentajeAdmin: D(0) })
+    const elec = r.lineas.find((l) => l.operarioId === 'op-elec')
+    expect(elec?.montoCUP.toNumber()).toBe(0)
+  })
+
+  test('FIJO: el costo interno NO afecta el pago del técnico', () => {
+    const ventas = [
+      venta('v1', '5000', 'usr-v1', [
+        ['op-elec', 1, '1500', 'FIJO', '300', '1200'], // sigue siendo 300
+      ]),
+    ]
+    const r = calcularLiquidacion({ ventas, operarios, ajustes: [], porcentajeAdmin: D(0) })
+    const elec = r.lineas.find((l) => l.operarioId === 'op-elec')
+    expect(elec?.montoCUP.toString()).toBe('300')
+  })
+
+  test('VENDEDOR_ONLINE con costo: se descuenta igual en su pago individual', () => {
+    const ventas = [
+      venta('v2', '3000', 'usr-online', [
+        ['op-online', 3, '3000', 'PORCENTAJE', '10', '600'], // (3000 − 600) × 10% = 240
+      ]),
+    ]
+    const r = calcularLiquidacion({ ventas, operarios, ajustes: [], porcentajeAdmin: D(0) })
+    const online = r.lineas.find((l) => l.operarioId === 'op-online')
+    expect(online?.montoCUP.toString()).toBe('240')
   })
 })

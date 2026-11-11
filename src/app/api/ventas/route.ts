@@ -41,9 +41,15 @@ export const GET = route(async (req: NextRequest) => {
     if (!venta) throw new ApiError(404, 'Venta no encontrada')
     await requireTaller(req, usuario, venta.tallerId, { permitirInactivo: true })
     const ajustes = await db.ajuste.findMany()
+    const plantillas = await db.plantillaTicket.findMany({
+      where: { ventas: { some: { id: venta.id } } },
+      select: { id: true, nombre: true, contenido: true },
+    })
     return NextResponse.json(
       serializar({
         venta,
+        // plantilla usada al imprimir esta venta (null → diseño por defecto)
+        plantilla: plantillas[0] ?? null,
         ajustes: Object.fromEntries(ajustes.map((a) => [a.clave, a.valor])),
       })
     )
@@ -125,6 +131,17 @@ export const POST = route(async (req: NextRequest) => {
     throw new ApiError(400, 'Debe configurar las tasas de cambio antes de vender')
   }
 
+  // Plantilla de ticket seleccionada en el POS (opcional)
+  let plantilla: { id: string; nombre: string } | null = null
+  if (datos.plantillaId) {
+    const p = await db.plantillaTicket.findUnique({
+      where: { id: datos.plantillaId },
+      select: { id: true, nombre: true, activo: true },
+    })
+    if (!p || !p.activo) throw new ApiError(400, 'Plantilla de ticket inválida o desactivada')
+    plantilla = { id: p.id, nombre: p.nombre }
+  }
+
   const venta = await db.$transaction(async (tx) => {
     // ---------- 1. Validar ítems y stock ----------
     const itemsPreparados: Array<{
@@ -134,6 +151,8 @@ export const POST = route(async (req: NextRequest) => {
       precioUnitario: import('decimal.js').Decimal
       precioOriginal: import('decimal.js').Decimal | null
       precioEditado: boolean
+      costoAdicional: import('decimal.js').Decimal | null
+      descripcionAdicional: string | null
     }> = []
     const ediciones: Array<{ nombre: string; moneda: string; precioOriginal: string; precioFinal: string }> = []
 
@@ -169,6 +188,13 @@ export const POST = route(async (req: NextRequest) => {
         precioEditado = true
       }
 
+      // Costo interno (moneda del ítem): NO afecta el total del cliente; se usa
+      // para ganancia y para descontar la base del pago PORCENTAJE. Puede superar
+      // el precio de venta (pérdida asumida) — se admite con advertencia visual en POS.
+      const costoAdicional =
+        item.costoAdicional === undefined || item.costoAdicional === null ? null : d2(item.costoAdicional)
+      const descripcionAdicional = item.descripcionAdicional?.trim() || null
+
       itemsPreparados.push({
         producto: {
           id: producto.id, nombre: producto.nombre, tipo: producto.tipo,
@@ -182,6 +208,8 @@ export const POST = route(async (req: NextRequest) => {
         precioUnitario,
         precioOriginal,
         precioEditado,
+        costoAdicional,
+        descripcionAdicional,
       })
     }
 
@@ -223,6 +251,7 @@ export const POST = route(async (req: NextRequest) => {
         tasaUSDSnapshot: tasas.USD,
         tasaEURSnapshot: tasas.EUR,
         ventaMostrador: !cliente,
+        plantillaId: plantilla?.id ?? null,
       },
     })
 
@@ -245,6 +274,8 @@ export const POST = route(async (req: NextRequest) => {
           cantidadDevuelta: 0,
           precioOriginal: it.precioEditado ? it.precioOriginal : null,
           precioEditado: it.precioEditado,
+          costoAdicional: it.costoAdicional,
+          descripcionAdicional: it.descripcionAdicional,
         },
       })
       // Movimiento de inventario (solo productos; servicios no manejan stock)
@@ -292,7 +323,7 @@ export const POST = route(async (req: NextRequest) => {
       }
     }
 
-    return { id: ventaCreada.id, codigo, totalCUP, items: itemsPreparados.length, ediciones }
+    return { id: ventaCreada.id, codigo, totalCUP, items: itemsPreparados.length, ediciones, conCostoInterno: itemsPreparados.filter((i) => i.costoAdicional && i.costoAdicional.gt(0)).length, conNotas: itemsPreparados.filter((i) => i.descripcionAdicional).length }
   })
 
   await registrarLog({
@@ -303,8 +334,22 @@ export const POST = route(async (req: NextRequest) => {
     entidad: 'Venta',
     entidadId: venta.id,
     resultado: 'OK',
-    despues: { codigo: venta.codigo, totalCUP: venta.totalCUP.toFixed(2), items: venta.items, cliente: cliente?.nombre ?? 'Consumidor final' },
+    despues: { codigo: venta.codigo, totalCUP: venta.totalCUP.toFixed(2), items: venta.items, cliente: cliente?.nombre ?? 'Consumidor final', plantilla: plantilla?.nombre ?? null, lineasConCostoInterno: venta.conCostoInterno, lineasConNota: venta.conNotas },
   })
+
+  // Plantilla usada para imprimir esta venta (§7 SELECCIONAR_PLANTILLA)
+  if (plantilla) {
+    await registrarLog({
+      req,
+      usuarioId: usuario.id,
+      tallerId: taller.id,
+      accion: 'SELECCIONAR_PLANTILLA',
+      entidad: 'Venta',
+      entidadId: venta.id,
+      resultado: 'OK',
+      despues: { plantilla: plantilla.nombre, plantillaId: plantilla.id, venta: venta.codigo },
+    })
+  }
 
   // Log de precios editados (PRD §4.2)
   for (const ed of venta.ediciones) {

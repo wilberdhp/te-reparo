@@ -16,6 +16,7 @@ const TALLER = 'test-taller-int'
 let usuarioId: string
 let productoId: string
 let operarioId: string
+let plantillaId: string
 
 function mockReq(token: string, body: unknown) {
   return {
@@ -77,6 +78,12 @@ beforeAll(async () => {
   operarioId = operario.id
   productoId = producto.id
 
+  // Plantilla de ticket para probar la venta con plantilla seleccionada
+  const plantilla = await db.plantillaTicket.create({
+    data: { nombre: 'Plantilla Test', contenido: '{{taller_nombre}}\n{{items_detalle}}', activo: true },
+  })
+  plantillaId = plantilla.id
+
   tokenVendedor = await crearToken({ sub: usuario.id, username: usuario.username, rol: 'VENDEDOR' })
 })
 
@@ -88,6 +95,7 @@ async function limpiar() {
     await db.ventaItem.deleteMany({ where: { ventaId: v.id } })
     await db.venta.deleteMany({ where: { id: v.id } })
   }
+  await db.plantillaTicket.deleteMany({ where: { nombre: 'Plantilla Test' } })
   const prods = await db.producto.findMany({ where: { tallerId: TALLER } })
   for (const p of prods) {
     await db.movimientoInventario.deleteMany({ where: { productoId: p.id } })
@@ -233,5 +241,75 @@ describe('Flujo de venta (integración, transacción atómica)', () => {
     expect(res.status).toBe(403)
     const logsDespues = await db.auditLog.count({ where: { usuarioId, resultado: 'DENEGADO' } })
     expect(logsDespues).toBe(logsAntes + 1)
+  })
+
+  test('Costo interno + nota de línea + plantilla: se persisten y NO cambian el total', async () => {
+    const { POST } = await import('../src/app/api/ventas/route')
+    const res = await POST(
+      mockReq(tokenVendedor, {
+        tallerId: TALLER,
+        plantillaId,
+        items: [{ productoId, cantidad: 1, operarioId, costoAdicional: 250.5, descripcionAdicional: 'IMEI 123 · bordes negros' }],
+        pagos: [{ metodo: 'EFECTIVO', moneda: 'CUP', monto: 500 }],
+      })
+    )
+    expect(res.status).toBe(200)
+    const datos = await res.json()
+
+    const venta = await db.venta.findUnique({
+      where: { id: datos.venta.id },
+      include: { items: true },
+    })
+    expect(venta).not.toBeNull()
+    expect(venta!.totalCUP.toString()).toBe('500') // el costo interno NO suma al total
+    expect(venta!.plantillaId).toBe(plantillaId)
+
+    const item = venta!.items[0]
+    expect(item.costoAdicional?.toString()).toBe('250.5')
+    expect(item.descripcionAdicional).toBe('IMEI 123 · bordes negros')
+
+    // Auditoría: plantilla usada para imprimir la venta (§7)
+    const logPlantilla = await db.auditLog.findFirst({
+      where: { accion: 'SELECCIONAR_PLANTILLA', entidadId: venta!.id },
+    })
+    expect(logPlantilla?.resultado).toBe('OK')
+  })
+
+  test('Costo interno mayor que el precio de venta: la venta SE PERMITE (pérdida asumida)', async () => {
+    const { POST } = await import('../src/app/api/ventas/route')
+    const res = await POST(
+      mockReq(tokenVendedor, {
+        tallerId: TALLER,
+        items: [{ productoId, cantidad: 1, operarioId, costoAdicional: 999 }],
+        pagos: [{ metodo: 'EFECTIVO', moneda: 'CUP', monto: 500 }],
+      })
+    )
+    expect(res.status).toBe(200)
+    const venta = await db.venta.findUnique({
+      where: { id: (await res.json()).venta.id },
+      include: { items: true },
+    })
+    expect(venta!.totalCUP.toString()).toBe('500') // total intacto pese al costo excesivo
+    expect(venta!.items[0].costoAdicional?.toString()).toBe('999')
+  })
+
+  test('Plantilla inválida o desactivada: venta rechazada (atómica)', async () => {
+    const { POST } = await import('../src/app/api/ventas/route')
+    const desactivada = await db.plantillaTicket.create({
+      data: { nombre: 'Plantilla Test Off', contenido: 'x', activo: false },
+    })
+    const ventasAntes = await db.venta.count({ where: { tallerId: TALLER } })
+    const res = await POST(
+      mockReq(tokenVendedor, {
+        tallerId: TALLER,
+        plantillaId: desactivada.id,
+        items: [{ productoId, cantidad: 1, operarioId }],
+        pagos: [{ metodo: 'EFECTIVO', moneda: 'CUP', monto: 500 }],
+      })
+    )
+    expect(res.status).toBe(400)
+    expect((await res.json()).error).toContain('Plantilla')
+    expect(await db.venta.count({ where: { tallerId: TALLER } })).toBe(ventasAntes)
+    await db.plantillaTicket.delete({ where: { id: desactivada.id } })
   })
 })

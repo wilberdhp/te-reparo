@@ -35,6 +35,8 @@ export const ATAJOS_POS: DefAtajo[] = [
   { teclas: '+ / −', descripcion: 'Aumentar o disminuir la cantidad de la línea seleccionada', ambito: 'pos' },
   { teclas: 'Ctrl + Supr', descripcion: 'Eliminar la línea seleccionada del carrito', ambito: 'pos' },
   { teclas: 'Ctrl + E', descripcion: 'Editar el precio de la línea seleccionada', ambito: 'pos' },
+  { teclas: 'Ctrl + N', descripcion: 'Abrir y enfocar la nota adicional de la línea seleccionada', ambito: 'pos' },
+  { teclas: 'Ctrl + C', descripcion: 'Enfocar el costo interno de la línea seleccionada (si no hay texto seleccionado; si lo hay, copia normal)', ambito: 'pos' },
 ]
 
 export const ATAJOS_FORMULARIOS: DefAtajo[] = [
@@ -50,6 +52,12 @@ export const ATAJOS_TABLAS: DefAtajo[] = [
 
 export const NOTA_CTRL_TAB =
   'Nota: algunos navegadores reservan Ctrl + Tab para cambiar de pestaña. Si su navegador no lo permite, use los botones de pestaña del carrito o F4 para crear uno nuevo.'
+
+export const NOTA_CTRL_N =
+  'Nota: Chrome/Edge reservan Ctrl + N para abrir una ventana nueva; en modo quiosco o PWA (instalado) el atajo llega a la app. Como alternativa, use el botón 📝 de la línea del carrito.'
+
+export const NOTA_CTRL_C =
+  'Nota: Ctrl + C solo enfoca el costo interno si NO hay texto seleccionado; si seleccionó texto, el navegador copia con normalidad.'
 
 /** Módulo destino de cada Alt+N (usado por los atajos globales del Shell). */
 export const VISTA_POR_ALT: Record<string, string> = {

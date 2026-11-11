@@ -29,6 +29,10 @@ export interface ItemCarrito {
   moneda: string
   operarioId: string | null
   stock: number
+  /** Costo interno del repuesto/servicio (moneda del ítem) — NO suma al total. */
+  costoAdicional?: number
+  /** Nota de línea (IMEI, falla, color…) impresa bajo el nombre en el ticket. */
+  descripcionAdicional?: string
 }
 
 export interface Carrito {
@@ -71,6 +75,8 @@ interface EstadoApp {
   quitarItem: (carritoId: string, productoId: string) => void
   cambiarCantidad: (carritoId: string, productoId: string, cantidad: number) => void
   cambiarPrecio: (carritoId: string, productoId: string, precio: number) => void
+  cambiarCosto: (carritoId: string, productoId: string, costo: number) => void
+  cambiarNota: (carritoId: string, productoId: string, nota: string) => void
   asignarOperario: (carritoId: string, productoId: string, operarioId: string | null) => void
   setCliente: (carritoId: string, cliente: { id: string; nombre: string } | null) => void
   vaciarCarrito: (carritoId: string) => void
@@ -195,6 +201,22 @@ export const useApp = create<EstadoApp>()(
           carritos: st.carritos.map((c) =>
             c.id === carritoId
               ? { ...c, items: c.items.map((i) => (i.productoId === productoId ? { ...i, precio } : i)) }
+              : c
+          ),
+        })),
+      cambiarCosto: (carritoId, productoId, costo) =>
+        set((st) => ({
+          carritos: st.carritos.map((c) =>
+            c.id === carritoId
+              ? { ...c, items: c.items.map((i) => (i.productoId === productoId ? { ...i, costoAdicional: costo } : i)) }
+              : c
+          ),
+        })),
+      cambiarNota: (carritoId, productoId, nota) =>
+        set((st) => ({
+          carritos: st.carritos.map((c) =>
+            c.id === carritoId
+              ? { ...c, items: c.items.map((i) => (i.productoId === productoId ? { ...i, descripcionAdicional: nota } : i)) }
               : c
           ),
         })),

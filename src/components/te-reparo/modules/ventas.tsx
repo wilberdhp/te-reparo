@@ -9,12 +9,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { toast } from 'sonner'
-import { Printer, Download, Eye, Search } from 'lucide-react'
+import { Printer, Download, Eye, Search, FileText } from 'lucide-react'
 import { api, descargar } from '@/lib/api-client'
 import { useApp } from '@/lib/store'
 import { fmt, fmtCUP, fmtFechaHora, ESTADO_VENTA_LABEL, METODO_PAGO_LABEL, RAMA_LABEL } from '@/lib/formato'
 import { useTablaTeclado } from '@/hooks/use-tabla-teclado'
-import { TicketVenta } from '../ticket'
+import { TicketVenta, TicketPlantilla, contextoDesdeVentaDetalle } from '../ticket'
 
 interface VentaResumen {
   id: string
@@ -39,7 +39,7 @@ interface VentaDetalle {
     tasaUSDSnapshot: number
     tasaEURSnapshot: number
     taller: { nombre: string; direccion: string; telefono: string }
-    cliente: { nombre: string; telefono: string | null } | null
+    cliente: { nombre: string; telefono: string | null; ci?: string | null } | null
     vendedor: { nombre: string; username: string } | null
     items: Array<{
       id: string
@@ -51,6 +51,8 @@ interface VentaDetalle {
       monedaPrecio: string
       subtotalCUP: number
       garantiaDiasSnapshot: number
+      costoAdicional?: number | null
+      descripcionAdicional?: string | null
       producto: { nombre: string; tipo: string }
       operario: { nombre: string; rama: string } | null
       garantias: Array<{ tipo: string; fechaReclamo: string }>
@@ -59,6 +61,8 @@ interface VentaDetalle {
     pagos: Array<{ metodo: string; moneda: string; monto: number; montoCUP: number; tasaAplicada: number; referencia: string | null }>
     devoluciones: Array<{ codigo: string; fecha: string; totalCUP: number; motivo: string }>
   }
+  // plantilla usada al imprimir esta venta (null → diseño por defecto)
+  plantilla: { id: string; nombre: string; contenido: string } | null
   ajustes: Record<string, string>
 }
 
@@ -246,11 +250,16 @@ export function Ventas() {
           {detalle && (
             <>
               <DialogHeader>
-                <DialogTitle className="flex items-center gap-2">
+                <DialogTitle className="flex items-center gap-2 flex-wrap">
                   Venta {detalle.venta.codigo}
                   <Badge variant={detalle.venta.estado === 'COMPLETADA' ? 'default' : 'outline'}>
                     {ESTADO_VENTA_LABEL[detalle.venta.estado]}
                   </Badge>
+                  {detalle.plantilla && (
+                    <Badge variant="outline" className="text-xs" title="Plantilla usada al imprimir este ticket">
+                      <FileText className="h-3 w-3 mr-1" aria-hidden /> {detalle.plantilla.nombre}
+                    </Badge>
+                  )}
                 </DialogTitle>
                 <DialogDescription>
                   {fmtFechaHora(detalle.venta.fecha)} · {detalle.venta.taller.nombre} · {detalle.venta.items.length} líneas
@@ -287,7 +296,13 @@ export function Ventas() {
                               {it.precioEditado && <span className="text-warning"> · precio editado (orig. {fmt(it.precioOriginal ?? 0)})</span>}
                               {it.cantidadDevuelta > 0 && <span className="text-destructive"> · devuelto {it.cantidadDevuelta}</span>}
                               {it.garantias.length > 0 && <span className="text-warning"> · garantía reclamada</span>}
+                              {(it.costoAdicional ?? 0) > 0 && (
+                                <span> · costo int. {fmt(it.costoAdicional ?? 0)} {it.monedaPrecio}</span>
+                              )}
                             </div>
+                            {it.descripcionAdicional && (
+                              <div className="text-xs text-muted-foreground italic break-words max-w-xs">📝 {it.descripcionAdicional}</div>
+                            )}
                           </TableCell>
                           <TableCell className="text-right num-tabular">{it.cantidad}</TableCell>
                           <TableCell className="text-right num-tabular">{fmt(it.precioUnitario)} {it.monedaPrecio}</TableCell>
@@ -346,36 +361,45 @@ export function Ventas() {
                 </div>
               </div>
 
-              {/* Ticket oculto para impresión */}
+              {/* Ticket oculto para impresión: plantilla usada en la venta o diseño por defecto */}
               <div className="hidden print:block">
-                <TicketVenta
-                  data={{
-                    codigo: detalle.venta.codigo,
-                    fecha: detalle.venta.fecha,
-                    taller: detalle.venta.taller,
-                    cliente: detalle.venta.cliente?.nombre ?? null,
-                    vendedor: detalle.venta.vendedor?.nombre ?? '',
-                    items: detalle.venta.items.map((i) => ({
-                      nombre: i.producto.nombre,
-                      cantidad: i.cantidad,
-                      precio: i.precioUnitario,
-                      moneda: i.monedaPrecio,
-                      subtotalCUP: i.subtotalCUP,
-                      operario: i.operario?.nombre ?? null,
-                    })),
-                    totalCUP: detalle.venta.totalCUP,
-                    pagos: detalle.venta.pagos.map((p) => ({
-                      metodo: METODO_PAGO_LABEL[p.metodo] ?? p.metodo,
-                      moneda: p.moneda,
-                      monto: p.monto,
-                      montoCUP: p.montoCUP,
-                      referencia: p.referencia,
-                    })),
-                    encabezado: detalle.ajustes.ticketEncabezado,
-                    pie: detalle.ajustes.ticketPie,
-                    ancho: detalle.ajustes.ticketAncho ?? '58',
-                  }}
-                />
+                {detalle.plantilla ? (
+                  <TicketPlantilla
+                    contenido={detalle.plantilla.contenido}
+                    contexto={contextoDesdeVentaDetalle(detalle)}
+                    ancho={detalle.ajustes.ticketAncho ?? '58'}
+                  />
+                ) : (
+                  <TicketVenta
+                    data={{
+                      codigo: detalle.venta.codigo,
+                      fecha: detalle.venta.fecha,
+                      taller: detalle.venta.taller,
+                      cliente: detalle.venta.cliente?.nombre ?? null,
+                      vendedor: detalle.venta.vendedor?.nombre ?? '',
+                      items: detalle.venta.items.map((i) => ({
+                        nombre: i.producto.nombre,
+                        cantidad: i.cantidad,
+                        precio: i.precioUnitario,
+                        moneda: i.monedaPrecio,
+                        subtotalCUP: i.subtotalCUP,
+                        operario: i.operario?.nombre ?? null,
+                        descripcionAdicional: i.descripcionAdicional ?? null,
+                      })),
+                      totalCUP: detalle.venta.totalCUP,
+                      pagos: detalle.venta.pagos.map((p) => ({
+                        metodo: METODO_PAGO_LABEL[p.metodo] ?? p.metodo,
+                        moneda: p.moneda,
+                        monto: p.monto,
+                        montoCUP: p.montoCUP,
+                        referencia: p.referencia,
+                      })),
+                      encabezado: detalle.ajustes.ticketEncabezado,
+                      pie: detalle.ajustes.ticketPie,
+                      ancho: detalle.ajustes.ticketAncho ?? '58',
+                    }}
+                  />
+                )}
               </div>
             </>
           )}

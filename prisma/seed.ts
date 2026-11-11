@@ -77,6 +77,61 @@ async function main() {
     await db.ajuste.upsert({ where: { clave }, update: {}, create: { clave, valor } })
   }
 
+  // ---------- Plantillas de tickets (ejemplos con variables dinámicas) ----------
+  const hayPlantillas = await db.plantillaTicket.count()
+  if (hayPlantillas === 0) {
+    const plantillas = [
+      {
+        nombre: 'Recepción de Equipo',
+        contenido: [
+          '{{taller_nombre}}',
+          '{{taller_direccion}}',
+          'Tel: {{taller_telefono}}',
+          '================================',
+          '      RECEPCIÓN DE EQUIPO',
+          '================================',
+          'Fecha:   {{venta_fecha}}',
+          'Ticket:  {{venta_codigo}}',
+          'Cliente: {{cliente_nombre}}',
+          'CI:      {{cliente_ci}}',
+          'Tel:     {{cliente_telefono}}',
+          'Atendió: {{vendedor_nombre}}',
+          '--------------------------------',
+          'EQUIPO / SERVICIO RECIBIDO:',
+          '{{items_detalle}}',
+          '--------------------------------',
+          'GARANTÍAS:',
+          '{{garantias_texto}}',
+          '--------------------------------',
+          'TOTAL: {{venta_total_cup}}',
+          'Conserve este ticket: la garantía',
+          'requiere este comprobante.',
+        ].join('\n'),
+      },
+      {
+        nombre: 'Venta de Accesorio',
+        contenido: [
+          '{{taller_nombre}}',
+          'Tel: {{taller_telefono}}',
+          '--------------------------------',
+          '     VENTA DE ACCESORIO',
+          '--------------------------------',
+          '{{venta_codigo}} · {{venta_fecha}}',
+          'Cliente: {{cliente_nombre}}',
+          '{{items_detalle}}',
+          '--------------------------------',
+          'TOTAL: {{venta_total_cup}}',
+          'Atendió: {{vendedor_nombre}}',
+          'Garantías:',
+          '{{garantias_texto}}',
+        ].join('\n'),
+      },
+    ]
+    for (const p of plantillas) {
+      await db.plantillaTicket.create({ data: { ...p, activo: true } })
+    }
+  }
+
   // ---------- Datos demo mínimos para probar el taller piloto ----------
   const hayProductos = await db.producto.count({ where: { tallerId: taller.id } })
   if (hayProductos === 0) {

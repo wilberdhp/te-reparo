@@ -8,10 +8,11 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Textarea } from '@/components/ui/textarea'
 import { toast } from 'sonner'
 import {
   Search, Plus, Minus, Trash2, UserPlus, User, CreditCard, Printer, X, Package, Wrench,
-  Loader2, Volume2, VolumeX, ScanLine,
+  Loader2, Volume2, VolumeX, ScanLine, StickyNote, FileText, AlertTriangle,
 } from 'lucide-react'
 import { api } from '@/lib/api-client'
 import { useApp } from '@/lib/store'
@@ -19,7 +20,7 @@ import { fmt, fmtCUP, aCUP, esServicio, METODO_PAGO_LABEL } from '@/lib/formato'
 import { sonidoExito, sonidoError, sonidoVenta, sonidosActivos, alternarSonidos } from '@/lib/sonidos'
 import { useDebounce } from '@/hooks/use-debounce'
 import { Kbd } from '../kbd'
-import { TicketVenta } from '../ticket'
+import { TicketVenta, TicketPlantilla, contextoDesdeVentaDetalle } from '../ticket'
 
 interface Producto {
   id: string
@@ -42,6 +43,12 @@ interface Operario {
   talleres: Array<{ tallerId: string }>
 }
 
+interface Plantilla {
+  id: string
+  nombre: string
+  activo: boolean
+}
+
 interface Cliente {
   id: string
   nombre: string
@@ -62,18 +69,22 @@ interface VentaDetalle {
     fecha: string
     totalCUP: number
     taller: { nombre: string; direccion: string; telefono: string }
-    cliente: { nombre: string } | null
+    cliente: { nombre: string; telefono?: string | null; ci?: string | null } | null
     vendedor: { nombre: string }
     items: Array<{
       cantidad: number
       precioUnitario: number
       monedaPrecio: string
       subtotalCUP: number
+      garantiaDiasSnapshot?: number
+      descripcionAdicional?: string | null
       producto: { nombre: string }
       operario: { nombre: string } | null
     }>
     pagos: Array<{ metodo: string; moneda: string; monto: number; montoCUP: number; referencia: string | null }>
   }
+  // plantilla usada al imprimir (null → diseño por defecto del sistema)
+  plantilla: { id: string; nombre: string; contenido: string } | null
   ajustes: Record<string, string>
 }
 
@@ -105,6 +116,8 @@ export function Pos() {
   const quitarItem = useApp((s) => s.quitarItem)
   const cambiarCantidad = useApp((s) => s.cambiarCantidad)
   const cambiarPrecio = useApp((s) => s.cambiarPrecio)
+  const cambiarCosto = useApp((s) => s.cambiarCosto)
+  const cambiarNota = useApp((s) => s.cambiarNota)
   const asignarOperario = useApp((s) => s.asignarOperario)
   const setCliente = useApp((s) => s.setCliente)
 
@@ -113,6 +126,12 @@ export function Pos() {
 
   const [productos, setProductos] = useState<Producto[]>([])
   const [operarios, setOperarios] = useState<Operario[]>([])
+  // Plantillas de ticket activas para el selector junto a «Cobrar»
+  const [plantillas, setPlantillas] = useState<Plantilla[]>([])
+  // plantilla elegida por carrito ('__defecto__' → diseño por defecto del sistema)
+  const [plantillaSel, setPlantillaSel] = useState<Record<string, string>>({})
+  // línea con la nota abierta (productoId) — Ctrl+N o botón 📝
+  const [notaAbierta, setNotaAbierta] = useState<string | null>(null)
   // Buscador unificado: texto manual Y lector de código de barras (HID = teclado + Enter)
   const [busqueda, setBusqueda] = useState('')
   const busquedaEfectiva = useDebounce(busqueda, 300) // filtro con debounce para búsqueda manual
@@ -130,6 +149,11 @@ export function Pos() {
   const busquedaRef = useRef<HTMLInputElement>(null)
   const contenedorLineas = useRef<HTMLDivElement>(null)
   const preciosRefs = useRef<Record<string, HTMLInputElement | null>>({})
+  const costosRefs = useRef<Record<string, HTMLInputElement | null>>({})
+  const notasRefs = useRef<Record<string, HTMLTextAreaElement | null>>({})
+  // último valor “comprometido” (blur/Enter) para auditar solo cambios reales
+  const costosCommitRef = useRef<Record<string, number>>({})
+  const notasCommitRef = useRef<Record<string, string>>({})
 
   const carritosTaller = useMemo(() => carritos.filter((c) => c.tallerId === tallerId), [carritos, tallerId])
   const carrito = useMemo(
@@ -156,6 +180,11 @@ export function Pos() {
         .get<{ operarios: Operario[] }>(`/api/operarios?tallerId=${tallerId}`)
         .then((r) => setOperarios(r.operarios.filter((o) => o.activo)))
         .catch(() => setOperarios([]))
+      // Plantillas de tickets ACTIVAS (selector del POS) — §3.3
+      api
+        .get<{ plantillas: Plantilla[] }>('/api/plantillas')
+        .then((r) => setPlantillas(r.plantillas.filter((p) => p.activo)))
+        .catch(() => setPlantillas([]))
     }
     setTasasEdit({ USD: String(tasas.USD), EUR: String(tasas.EUR) })
     setSonido(sonidosActivos())
@@ -209,6 +238,60 @@ export function Pos() {
     )
   }, [carrito])
 
+  // Líneas con costo interno MAYOR que el precio de venta: advertencia roja
+  // pero la venta se permite (pérdida asumida por el taller) — §3.4
+  const itemsCostoExcede = useMemo(
+    () => (carrito?.items ?? []).filter((it) => (it.costoAdicional ?? 0) > it.precio),
+    [carrito]
+  )
+
+  /** Audita una acción del POS en el carrito (§7): fire-and-forget, nunca bloquea. */
+  async function registrarAccionPos(
+    accion: 'MODIFICAR_COSTO_ITEM' | 'AGREGAR_NOTA_ITEM',
+    it: { productoId: string; nombre: string },
+    antes: Record<string, unknown>,
+    despues: Record<string, unknown>
+  ) {
+    try {
+      await api.post('/api/logs', {
+        accion,
+        productoId: it.productoId,
+        productoNombre: it.nombre,
+        tallerId: tallerId ?? null,
+        antes,
+        despues,
+      })
+    } catch {
+      // la auditoría no debe interrumpir la venta; el valor final queda persistido
+      // en VentaItem al confirmarse y se registra en la venta (CREAR).
+    }
+  }
+
+  /** Commit del costo interno (blur/Enter): audita solo si cambió de verdad. */
+  function commitCosto(it: { productoId: string; nombre: string; moneda: string; costoAdicional?: number }) {
+    const previo = costosCommitRef.current[it.productoId] ?? 0
+    const actual = it.costoAdicional ?? 0
+    if (previo === actual) return
+    costosCommitRef.current[it.productoId] = actual
+    void registrarAccionPos(
+      'MODIFICAR_COSTO_ITEM',
+      it,
+      { costoAdicional: previo, moneda: it.moneda },
+      { costoAdicional: actual, moneda: it.moneda }
+    )
+  }
+
+  /** Commit de la nota de línea (blur): audita cuando se añade/cambia texto. */
+  function commitNota(it: { productoId: string; nombre: string; descripcionAdicional?: string }) {
+    const previo = notasCommitRef.current[it.productoId] ?? ''
+    const actual = it.descripcionAdicional ?? ''
+    if (previo === actual) return
+    notasCommitRef.current[it.productoId] = actual
+    if (actual.trim()) {
+      void registrarAccionPos('AGREGAR_NOTA_ITEM', it, { nota: previo }, { nota: actual })
+    }
+  }
+
   // =============== ACCIONES ===============
 
   function agregarProducto(p: Producto) {
@@ -230,6 +313,8 @@ export function Pos() {
       moneda: p.monedaPrecio,
       operarioId: null,
       stock: stockDisponible,
+      costoAdicional: 0,
+      descripcionAdicional: '',
     })
     sonidoExito()
   }
@@ -366,11 +451,16 @@ export function Pos() {
       const res = await api.post<{ venta: { id: string; codigo: string } }>('/api/ventas', {
         tallerId,
         clienteId: carrito.clienteId,
+        plantillaId:
+          plantillaSel[carrito.id] && plantillaSel[carrito.id] !== '__defecto__' ? plantillaSel[carrito.id] : null,
         items: carrito.items.map((it) => ({
           productoId: it.productoId,
           cantidad: it.cantidad,
           precioUnitario: it.precio !== it.precioOriginal ? it.precio : undefined,
           operarioId: it.operarioId,
+          // costo interno (moneda del ítem) y nota de línea — §2.1/§1
+          costoAdicional: (it.costoAdicional ?? 0) > 0 ? it.costoAdicional : undefined,
+          descripcionAdicional: it.descripcionAdicional?.trim() || undefined,
         })),
         pagos: pagosValidos.map((p) => ({
           metodo: p.metodo,
@@ -519,6 +609,43 @@ export function Pos() {
     { enabled: () => !modalCliente && !modalCobro && !ticketData }
   )
 
+  // §6: Ctrl+N → abrir y enfocar la nota adicional de la línea seleccionada
+  useHotkeys(
+    'ctrl+n',
+    (e) => {
+      // Chrome/Edge reservan Ctrl+N (ventana nueva) salvo en quiosco/PWA; cuando
+      // llega el evento, lo interceptamos. Ver nota del modal de atajos.
+      e.preventDefault()
+      e.stopPropagation()
+      if (!carrito || carrito.items.length === 0) return
+      const i = lineaSel < 0 ? 0 : lineaSel
+      setLineaSel(i)
+      const it = carrito.items[i]
+      setNotaAbierta(it.productoId)
+      setTimeout(() => notasRefs.current[it.productoId]?.focus(), 30)
+    },
+    { enabled: () => !modalCliente && !modalCobro && !ticketData }
+  )
+
+  // §6: Ctrl+C → enfocar el costo interno de la línea seleccionada SOLO si no hay
+  // texto seleccionado (si lo hay, el navegador copia con normalidad).
+  useHotkeys(
+    'ctrl+c',
+    (e) => {
+      const seleccion = typeof window.getSelection === 'function' ? (window.getSelection()?.toString() ?? '') : ''
+      if (seleccion) return // no interceptar: dejar Copiar
+      if (!carrito || lineaSel < 0) return // sin línea seleccionada no actúa
+      const it = carrito.items[lineaSel]
+      if (!it) return
+      const ref = costosRefs.current[it.productoId]
+      if (!ref) return
+      e.preventDefault()
+      ref.focus()
+      ref.select()
+    },
+    { enableOnFormTags: true, enabled: () => !modalCliente && !modalCobro && !ticketData }
+  )
+
   // Esc en el buscador: limpiar la búsqueda actual
   useHotkeys(
     'esc',
@@ -576,7 +703,7 @@ export function Pos() {
               <span className="flex items-center gap-1"><Kbd>F4</Kbd> carrito</span>
               <span className="flex items-center gap-1"><Kbd>F8</Kbd> cliente</span>
               <span className="flex items-center gap-1"><Kbd>F9</Kbd> cobrar</span>
-              <span className="flex items-center gap-1"><Kbd>↑↓</Kbd> líneas · <Kbd>+</Kbd>/<Kbd>−</Kbd> cant. · <Kbd>Ctrl</Kbd>+<Kbd>E</Kbd> precio · <Kbd>Ctrl</Kbd>+<Kbd>Supr</Kbd> quitar</span>
+              <span className="flex items-center gap-1"><Kbd>↑↓</Kbd> líneas · <Kbd>+</Kbd>/<Kbd>−</Kbd> cant. · <Kbd>Ctrl</Kbd>+<Kbd>E</Kbd> precio · <Kbd>Ctrl</Kbd>+<Kbd>N</Kbd> nota · <Kbd>Ctrl</Kbd>+<Kbd>C</Kbd> costo · <Kbd>Ctrl</Kbd>+<Kbd>Supr</Kbd> quitar</span>
               <span className="flex items-center gap-1"><Kbd>Shift</Kbd>+<Kbd>?</Kbd> todos los atajos</span>
             </div>
             <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -704,6 +831,7 @@ export function Pos() {
               const subtotal = aCUP(it.precio, it.moneda, tasas) * it.cantidad
               const faltaOperario = esServicio(it.tipo) && !it.operarioId
               const seleccionada = i === lineaSel
+              const costoExcede = (it.costoAdicional ?? 0) > it.precio
               return (
                 <div
                   key={it.productoId}
@@ -727,16 +855,58 @@ export function Pos() {
                   } ${faltaOperario && seleccionada ? 'border-destructive' : ''}`}
                 >
                   <div className="flex items-start justify-between gap-2">
-                    <span className="text-sm font-medium leading-tight">{it.nombre}</span>
-                    <Button
-                      variant="ghost"
-                      className="h-6 w-6 p-0 text-muted-foreground hover:text-destructive"
-                      onClick={() => carrito && quitarItem(carrito.id, it.productoId)}
-                      aria-label={`Quitar ${it.nombre}`}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
+                    <span className="text-sm font-medium leading-tight flex-1">{it.nombre}</span>
+                    <div className="flex items-center gap-0.5">
+                      <Button
+                        variant="ghost"
+                        className={`h-6 w-6 p-0 ${it.descripcionAdicional ? 'text-brand-red' : 'text-muted-foreground'}`}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setNotaAbierta(notaAbierta === it.productoId ? null : it.productoId)
+                          setLineaSel(i)
+                        }}
+                        aria-label={`Nota adicional de ${it.nombre} (Ctrl+N)`}
+                        aria-pressed={notaAbierta === it.productoId}
+                        title="Nota adicional (Ctrl+N)"
+                      >
+                        <StickyNote className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        className="h-6 w-6 p-0 text-muted-foreground hover:text-destructive"
+                        onClick={() => carrito && quitarItem(carrito.id, it.productoId)}
+                        aria-label={`Quitar ${it.nombre}`}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
                   </div>
+                  {it.descripcionAdicional && notaAbierta !== it.productoId ? (
+                    <p className="text-[10px] text-muted-foreground leading-tight line-clamp-2">{it.descripcionAdicional}</p>
+                  ) : null}
+                  {notaAbierta === it.productoId && (
+                    <div className="space-y-1">
+                      <Label htmlFor={`nota-${it.productoId}`} className="text-[10px] text-muted-foreground">
+                        Nota de línea (IMEI, falla, color…)
+                      </Label>
+                      <Textarea
+                        id={`nota-${it.productoId}`}
+                        ref={(el) => {
+                          notasRefs.current[it.productoId] = el
+                        }}
+                        className="min-h-[56px] text-xs"
+                        maxLength={500}
+                        placeholder="Ej: IMEI 356938035643809 · pantalla con bordes negros"
+                        value={it.descripcionAdicional ?? ''}
+                        onChange={(e) => {
+                          if (carrito) cambiarNota(carrito.id, it.productoId, e.target.value)
+                        }}
+                        onBlur={() => commitNota(it)}
+                        onClick={(e) => e.stopPropagation()}
+                        aria-label={`Nota adicional de ${it.nombre} (Ctrl+N)`}
+                      />
+                    </div>
+                  )}
                   <div className="flex items-center gap-1.5 flex-wrap">
                     {!esServicio(it.tipo) ? (
                       <div className="flex items-center border rounded-md h-8 bg-card">
@@ -779,9 +949,39 @@ export function Pos() {
                       />
                       <span className="text-xs text-muted-foreground">{it.moneda}</span>
                     </div>
+                    <div
+                      className="flex items-center gap-1"
+                      title="Costo interno del repuesto/servicio: NO suma al total del cliente; se usa para la ganancia y el pago PORCENTAJE del operario."
+                    >
+                      <span className="text-[10px] text-muted-foreground select-none" aria-hidden>
+                        Costo (Int.)
+                      </span>
+                      <Input
+                        ref={(el) => {
+                          costosRefs.current[it.productoId] = el
+                        }}
+                        className={`w-16 h-8 text-xs num-tabular ${costoExcede ? 'border-destructive text-destructive focus-visible:ring-destructive' : ''}`}
+                        value={it.costoAdicional ?? 0}
+                        inputMode="decimal"
+                        onChange={(e) => {
+                          const v = parseFloat(e.target.value)
+                          if (isFinite(v) && v >= 0 && carrito) cambiarCosto(carrito.id, it.productoId, v)
+                        }}
+                        onFocus={() => setLineaSel(i)}
+                        onBlur={() => commitCosto(it)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault()
+                            e.currentTarget.blur()
+                          }
+                        }}
+                        aria-label={`Costo interno de ${it.nombre} (Ctrl+C)`}
+                      />
+                      <span className="text-xs text-muted-foreground">{it.moneda}</span>
+                    </div>
                     <span className="ml-auto text-sm font-semibold num-tabular">{fmt(subtotal)} CUP</span>
                   </div>
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1.5 flex-wrap">
                     <Select
                       value={it.operarioId ?? ''}
                       onValueChange={(v) =>
@@ -812,6 +1012,15 @@ export function Pos() {
                         precio editado
                       </Badge>
                     )}
+                    {costoExcede && (
+                      <Badge
+                        variant="outline"
+                        className="text-[10px] text-destructive border-destructive/50"
+                        title="El costo interno supera el precio de venta. Se permite registrar la venta (pérdida asumida por el taller)."
+                      >
+                        <AlertTriangle className="h-3 w-3 mr-0.5" aria-hidden /> costo &gt; precio
+                      </Badge>
+                    )}
                   </div>
                 </div>
               )
@@ -833,6 +1042,31 @@ export function Pos() {
               <span>Equivalente</span>
               <span>{fmt(totales.usd)} USD</span>
             </div>
+          </div>
+
+          {/* Selector de plantilla de ticket — §3.3 (por defecto: diseño del sistema) */}
+          <div className="space-y-1">
+            <Label htmlFor="plantilla-ticket" className="text-xs text-muted-foreground flex items-center gap-1">
+              <FileText className="h-3.5 w-3.5" aria-hidden /> Plantilla del ticket
+            </Label>
+            <Select
+              value={plantillaSel[carrito?.id ?? ''] ?? '__defecto__'}
+              onValueChange={(v) => {
+                if (!carrito) return
+                setPlantillaSel((s) => ({ ...s, [carrito.id]: v }))
+              }}
+              disabled={!carrito || plantillas.length === 0}
+            >
+              <SelectTrigger id="plantilla-ticket" className="h-9 text-xs" aria-label="Plantilla de ticket para imprimir">
+                <SelectValue placeholder={plantillas.length === 0 ? 'Sin plantillas configuradas' : 'Diseño por defecto del sistema'} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__defecto__">— Diseño por defecto —</SelectItem>
+                {plantillas.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>{p.nombre}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
 
           <Button
@@ -1031,6 +1265,12 @@ export function Pos() {
                   Hay líneas inválidas: servicios sin operario o cantidad mayor que el stock.
                 </p>
               )}
+              {itemsCostoExcede.length > 0 && (
+                <p className="text-xs text-destructive flex items-center gap-1">
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                  {itemsCostoExcede.length} línea(s) con costo interno ≥ precio de venta — pérdida asumida por el taller (la venta se permite).
+                </p>
+              )}
             </div>
 
             <div className="flex gap-2 justify-end pt-1">
@@ -1061,34 +1301,43 @@ export function Pos() {
           <div className="p-4 max-h-[80vh] overflow-auto">
             {ticketData && (
               <div className="bg-white shadow-lg rounded-sm text-black" style={{ width: `${ticketData.ajustes.ticketAncho ?? '58'}mm` }}>
-                <TicketVenta
-                  data={{
-                    codigo: ticketData.venta.codigo,
-                    fecha: ticketData.venta.fecha,
-                    taller: ticketData.venta.taller,
-                    cliente: ticketData.venta.cliente?.nombre ?? null,
-                    vendedor: ticketData.venta.vendedor.nombre,
-                    items: ticketData.venta.items.map((i) => ({
-                      nombre: i.producto.nombre,
-                      cantidad: i.cantidad,
-                      precio: i.precioUnitario,
-                      moneda: i.monedaPrecio,
-                      subtotalCUP: i.subtotalCUP,
-                      operario: i.operario?.nombre ?? null,
-                    })),
-                    totalCUP: ticketData.venta.totalCUP,
-                    pagos: ticketData.venta.pagos.map((p) => ({
-                      metodo: METODO_PAGO_LABEL[p.metodo] ?? p.metodo,
-                      moneda: p.moneda,
-                      monto: p.monto,
-                      montoCUP: p.montoCUP,
-                      referencia: p.referencia,
-                    })),
-                    encabezado: ticketData.ajustes.ticketEncabezado,
-                    pie: ticketData.ajustes.ticketPie,
-                    ancho: ticketData.ajustes.ticketAncho ?? '58',
-                  }}
-                />
+                {ticketData.plantilla ? (
+                  <TicketPlantilla
+                    contenido={ticketData.plantilla.contenido}
+                    contexto={contextoDesdeVentaDetalle(ticketData)}
+                    ancho={ticketData.ajustes.ticketAncho ?? '58'}
+                  />
+                ) : (
+                  <TicketVenta
+                    data={{
+                      codigo: ticketData.venta.codigo,
+                      fecha: ticketData.venta.fecha,
+                      taller: ticketData.venta.taller,
+                      cliente: ticketData.venta.cliente?.nombre ?? null,
+                      vendedor: ticketData.venta.vendedor.nombre,
+                      items: ticketData.venta.items.map((i) => ({
+                        nombre: i.producto.nombre,
+                        cantidad: i.cantidad,
+                        precio: i.precioUnitario,
+                        moneda: i.monedaPrecio,
+                        subtotalCUP: i.subtotalCUP,
+                        operario: i.operario?.nombre ?? null,
+                        descripcionAdicional: i.descripcionAdicional ?? null,
+                      })),
+                      totalCUP: ticketData.venta.totalCUP,
+                      pagos: ticketData.venta.pagos.map((p) => ({
+                        metodo: METODO_PAGO_LABEL[p.metodo] ?? p.metodo,
+                        moneda: p.moneda,
+                        monto: p.monto,
+                        montoCUP: p.montoCUP,
+                        referencia: p.referencia,
+                      })),
+                      encabezado: ticketData.ajustes.ticketEncabezado,
+                      pie: ticketData.ajustes.ticketPie,
+                      ancho: ticketData.ajustes.ticketAncho ?? '58',
+                    }}
+                  />
+                )}
               </div>
             )}
           </div>

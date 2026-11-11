@@ -2,6 +2,79 @@
 // Tickets HTML imprimibles (58/80 mm configurables) vía window.print().
 // La clase `solo-impresion` se imprime únicamente con @media print (globals.css).
 import { fmt, fmtFechaHora } from '@/lib/formato'
+import { renderizarPlantilla, type ContextoPlantilla } from '@/lib/plantillas'
+
+/**
+ * Ticket renderizado desde una PlantillaTicket (PROMPT DE ACTUALIZACIÓN §5):
+ * el motor de variables (src/lib/plantillas.ts) reemplaza {{...}} con los datos
+ * reales de la venta, respeta los saltos de línea del administrador e imprime
+ * {{items_detalle}} como tabla con la descripcionAdicional bajo el nombre (8pt).
+ * El HTML del motor está ESCAPADO (solo inserta la tabla/lista que él genera).
+ */
+export function TicketPlantilla({
+  contenido,
+  contexto,
+  ancho,
+}: {
+  contenido: string
+  contexto: ContextoPlantilla
+  ancho: string
+}) {
+  const html = renderizarPlantilla(contenido, contexto)
+  return (
+    <div
+      className="solo-impresion bg-white text-black mx-auto p-2 font-mono"
+      style={{ width: `${ancho}mm`, fontSize: ancho === '58' ? '9px' : '10.5px', lineHeight: 1.4 }}
+      // HTML generado por el motor: todo el texto del admin viene escapado.
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  )
+}
+
+/** Convierte un detalle de venta (API /api/ventas?id=) al contexto del motor. */
+export function contextoDesdeVentaDetalle(detalle: {
+  venta: {
+    taller: { nombre: string; direccion: string; telefono: string }
+    cliente: { nombre: string; ci?: string | null; telefono?: string | null } | null
+    vendedor: { nombre: string }
+    codigo: string
+    fecha: string
+    totalCUP: number
+    items: Array<{
+      producto: { nombre: string }
+      cantidad: number
+      precioUnitario: number
+      monedaPrecio: string
+      subtotalCUP: number
+      descripcionAdicional?: string | null
+      garantiaDiasSnapshot?: number
+    }>
+  }
+}): ContextoPlantilla {
+  const v = detalle.venta
+  return {
+    taller: v.taller,
+    cliente: v.cliente
+      ? { nombre: v.cliente.nombre, ci: v.cliente.ci ?? null, telefono: v.cliente.telefono ?? null }
+      : null, // venta de mostrador → «Consumidor Final»
+    venta: {
+      codigo: v.codigo,
+      fecha: v.fecha,
+      totalCUP: v.totalCUP,
+      vendedorNombre: v.vendedor.nombre,
+    },
+    items: v.items.map((i) => ({
+      nombre: i.producto.nombre,
+      cantidad: i.cantidad,
+      precio: i.precioUnitario,
+      moneda: i.monedaPrecio,
+      subtotalCUP: i.subtotalCUP,
+      descripcionAdicional: i.descripcionAdicional ?? null,
+    })),
+    // Días de garantía por producto vendido (snapshot de cada línea)
+    garantias: v.items.map((i) => ({ nombre: i.producto.nombre, dias: i.garantiaDiasSnapshot ?? 0 })),
+  }
+}
 
 export interface TicketVentaData {
   codigo: string
@@ -9,7 +82,16 @@ export interface TicketVentaData {
   taller: { nombre: string; direccion: string; telefono: string }
   cliente: string | null
   vendedor: string
-  items: Array<{ nombre: string; cantidad: number; precio: number; moneda: string; subtotalCUP: number; operario?: string | null }>
+  items: Array<{
+    nombre: string
+    cantidad: number
+    precio: number
+    moneda: string
+    subtotalCUP: number
+    operario?: string | null
+    /** Nota de línea (IMEI, falla…) impresa bajo el nombre en fuente menor. */
+    descripcionAdicional?: string | null
+  }>
   totalCUP: number
   pagos: Array<{ metodo: string; moneda: string; monto: number; montoCUP: number; referencia?: string | null }>
   encabezado?: string
@@ -50,6 +132,11 @@ export function TicketVenta({ data }: { data: TicketVentaData }) {
               {it.cantidad}× {it.nombre}
             </span>
           </div>
+          {it.descripcionAdicional && (
+            <div style={{ fontSize: '0.82em' }} className="opacity-80 leading-tight break-words">
+              {it.descripcionAdicional}
+            </div>
+          )}
           <div className="flex justify-between text-[9px] opacity-80">
             <span>
               {fmt(it.precio)} {it.moneda}

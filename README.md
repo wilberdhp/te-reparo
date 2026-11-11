@@ -5,6 +5,34 @@ móvil con múltiples talleres: inventario por taller, POS con pagos multimoneda
 (CUP/USD/EUR), clientes globales, garantías, devoluciones, liquidación diaria de
 pagos a operarios, configuración y auditoría completa.
 
+## Novedades v0.4.0 — Costos internos, notas por línea y plantillas de tickets
+
+- **`VentaItem.costoAdicional`** (moneda del ítem): costo interno del repuesto/servicio.
+  NO suma al total que paga el cliente; se usa para la ganancia y para descontar la
+  base del pago PORCENTAJE del operario. VENDEDOR y ADMIN pueden editarlo en el POS y
+  **cada cambio queda en auditoría** (`MODIFICAR_COSTO_ITEM` con valor anterior/nuevo).
+  Si el ítem está en USD/EUR, se convierte a CUP con la tasa *snapshot* de la venta
+  para el cálculo de pagos. Un costo mayor que el precio de venta solo muestra
+  **advertencia roja** (la venta se permite: pérdida asumida por el taller).
+- **`VentaItem.descripcionAdicional`**: nota por línea (IMEI, falla, color…) editable
+  en el POS con el botón 📝 o `Ctrl+N`; se imprime bajo el nombre del producto
+  (fuente menor) y se audita (`AGREGAR_NOTA_ITEM`).
+- **Pago PORCENTAJE (nueva fórmula):** `(subtotalCUP − costoAdicionalEnCUP) × valor / 100`,
+  con base mínima 0 (jamás se pagan montos negativos). FIJO sigue sin verse afectado.
+- **`PlantillaTicket` + `Venta.plantillaId`:** plantillas de texto administradas en
+  **Configuración → Plantillas de Tickets** (solo ADMIN: crear, editar, activar/desactivar,
+  vista previa con datos de prueba) con variables dinámicas
+  (`{{taller_*}}`, `{{cliente_*}}`, `{{venta_*}}`, `{{vendedor_nombre}}`,
+  `{{items_detalle}}`, `{{garantias_texto}}`). En el POS, el vendedor elige la plantilla
+  junto a «Cobrar» (por defecto: diseño del sistema). Al imprimir se reemplazan las
+  variables con los datos reales de la venta, se respetan los saltos de línea del
+  administrador y `{{items_detalle}}` imprime la tabla con las notas de línea a 8 pt.
+  Auditoría: `PLANTILLA_CREADA/EDITADA/ACTIVADA/DESACTIVADA` y `SELECCIONAR_PLANTILLA`
+  por venta.
+- **Atajos nuevos en el POS:** `Ctrl+N` (nota de la línea seleccionada) y `Ctrl+C`
+  (costo interno de la línea seleccionada — solo si NO hay texto seleccionado).
+
+
 ## Stack
 
 - **Next.js 16 (App Router) + TypeScript**
@@ -16,7 +44,7 @@ pagos a operarios, configuración y auditoría completa.
 - **Ticket:** HTML imprimible 58/80 mm configurable vía `window.print()`
 - **UI:** Tailwind CSS 4 + shadcn/ui + Lucide · Identidad visual del logotipo (rojo/blanco/negro)
   · Inter · modo claro/oscuro · atajos de teclado · optimizada para lector de barras HID
-- **Atajos:** `react-hotkeys-hook` (globales Alt+1…7, POS con F2/F4/F8/F9, Ctrl+S, tablas con flechas)
+- **Atajos:** `react-hotkeys-hook` (globales Alt+1…7, POS con F2/F4/F8/F9, Ctrl+S, Ctrl+N (nota) y Ctrl+C (costo interno), tablas con flechas)
 - **Feedback:** `sonner` (toasts), sonidos Web Audio en el POS, confirmación peligrosa en dos pasos
 
 ## Variables de entorno (`.env`)
@@ -42,7 +70,8 @@ bun test                 # tests de moneda, pagos, liquidación y flujo de venta
 
 El seed crea: taller piloto, usuario admin, operario ADMIN, tasas (USD=440,
 EUR=470 — **actualícelas**), ajustes de ticket (58 mm) y `porcentajeAdmin=0`,
-más 5 productos/servicios de demo.
+más 5 productos/servicios de demo y 2 plantillas de
+ticket («Recepción de Equipo» y «Venta de Accesorio»).
 
 ## Estructura
 
@@ -51,15 +80,18 @@ prisma/schema.prisma        # Modelo de datos completo (entidades del PRD)
 prisma/seed.ts              # Seed inicial
 src/lib/                    # Dominio: money (Decimal), pagos, liquidación (puras),
                             # auth (JWT), audit, rate-limit, códigos, barcode CODE128,
-                            # validaciones Zod, http (verificación rol/taller en servidor)
+                            # validaciones Zod, http (verificación rol/taller en servidor),
+                            # plantillas (motor de variables de tickets)
 src/app/api/                # API REST (auth, productos, movimientos, transferencias,
                             # ventas, devoluciones, garantías, liquidaciones, talleres,
-                            # usuarios, operarios, tasas, ajustes, logs, backup, dashboard)
+                            # usuarios, operarios, tasas, ajustes, logs, backup, dashboard,
+                            # plantillas de tickets)
 src/app/page.tsx            # SPA (única ruta visible) con navegación por módulos
 src/components/te-reparo/   # Login, shell, POS, inventario, ventas, clientes,
                             # devoluciones, garantías, liquidaciones, configuración,
                             # logs, tickets imprimibles
-tests/                      # money / pagos / liquidación (unitarios) + venta (integración)
+tests/                      # money / pagos / liquidación / plantillas (unitarios)
+                            # + venta (integración)
 ```
 
 ## Reglas de negocio implementadas (§4 del PRD)
@@ -87,7 +119,7 @@ tests/                      # money / pagos / liquidación (unitarios) + venta (
 - **Liquidación diaria por taller/día** (`@@unique([tallerId, fecha])`):
   - *VENDEDOR presencial:* regla grupal — el **total vendido del taller ese día** se paga
     ÍNTEGRO a cada operario vendedor activo del taller, incluido el que vendió 0.
-  - *INFORMÁTICO/ELECTRÓNICO:* acumulado individual por snapshot (FIJO×cant o %×subtotal).
+  - *INFORMÁTICO/ELECTRÓNICO:* acumulado individual por snapshot (FIJO×cant o %×(subtotal−costo interno), base mínima 0).
     El reparto equitativo se muestra como nota al pie de referencia (no afecta el monto).
   - *VENDEDOR_ONLINE:* individual por sus propias ventas del día en ese taller.
   - *ADMIN:* `porcentajeAdmin` × total vendido del día (línea en la liquidación).

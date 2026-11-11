@@ -3,6 +3,7 @@ import { db } from '@/lib/db'
 import { route, ApiError, requireAuth, requireTaller } from '@/lib/http'
 import { serializar, D } from '@/lib/money'
 import { calcularLiquidacion } from '@/lib/liquidacion'
+import { costoAdicionalEnCUP } from '@/lib/pagos'
 import { inicioDia, finDia, parseFechaCorta, fechaCorta } from '@/lib/fecha'
 import { ajusteValor } from '@/lib/ajustes'
 
@@ -103,6 +104,11 @@ export const GET = route(async (req: NextRequest) => {
               operarioId: it.operarioId,
               cantidad: it.cantidad,
               subtotalCUP: D(it.subtotalCUP),
+              // Costo interno en CUP con las tasas SNAPSHOT de la venta (§2.1/§2.2)
+              costoAdicionalCUP: costoAdicionalEnCUP(it.costoAdicional, it.monedaPrecio, {
+                USD: D(v.tasaUSDSnapshot),
+                EUR: D(v.tasaEURSnapshot),
+              }),
               pagoOperarioTipoSnapshot: it.pagoOperarioTipoSnapshot,
               pagoOperarioValorSnapshot: D(it.pagoOperarioValorSnapshot),
             })),

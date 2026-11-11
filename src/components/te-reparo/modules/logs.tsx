@@ -1,5 +1,5 @@
 'use client'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -12,6 +12,8 @@ import { toast } from 'sonner'
 import { Download, Eye, Search } from 'lucide-react'
 import { api, descargar } from '@/lib/api-client'
 import { fmtFechaHora } from '@/lib/formato'
+import { usePaginacion } from '@/hooks/use-paginacion'
+import { TablePagination, FilasEsqueleto } from '../table-pagination'
 
 interface Log {
   id: string
@@ -34,18 +36,22 @@ interface UsuariosLista {
 
 export function Logs() {
   const [logs, setLogs] = useState<Log[]>([])
-  const [total, setTotal] = useState(0)
-  const [pagina, setPagina] = useState(1)
-  const [paginas, setPaginas] = useState(1)
+  const [cargando, setCargando] = useState(true)
   const [entidades, setEntidades] = useState<string[]>([])
   const [usuariosLista, setUsuariosLista] = useState<UsuariosLista['usuarios']>([])
   const [filtros, setFiltros] = useState({ desde: '', hasta: '', usuarioId: '', entidad: '', accion: '', resultado: '' })
   const [detalle, setDetalle] = useState<Log | null>(null)
   const [q, setQ] = useState('')
+  // Paginación del lado del servidor (fecha desc): ?log_page=&log_limit=
+  const pag = usePaginacion('log')
+  const { params: pagParams, fijarMeta: fijarMetaPag, reiniciar: reiniciarPag } = pag
 
   const cargar = useCallback(async () => {
+    setCargando(true)
     try {
-      const params = new URLSearchParams({ page: String(pagina) })
+      const params = new URLSearchParams()
+      params.set('page', pagParams.get('page') ?? '1')
+      params.set('limit', pagParams.get('limit') ?? '25')
       if (filtros.desde) params.set('desde', filtros.desde)
       if (filtros.hasta) params.set('hasta', filtros.hasta)
       if (filtros.usuarioId) params.set('usuarioId', filtros.usuarioId)
@@ -53,24 +59,27 @@ export function Logs() {
       if (filtros.accion) params.set('accion', filtros.accion)
       if (filtros.resultado) params.set('resultado', filtros.resultado)
       const res = await api.get<{ logs: Log[]; total: number; paginas: number; entidades: string[] }>(`/api/logs?${params}`)
-      const query = q.trim().toLowerCase()
-      setLogs(
-        query
-          ? res.logs.filter(
-              (l) =>
-                l.accion.toLowerCase().includes(query) ||
-                (l.usuario?.username ?? '').toLowerCase().includes(query) ||
-                l.entidad.toLowerCase().includes(query)
-            )
-          : res.logs
-      )
-      setTotal(res.total)
-      setPaginas(res.paginas)
+      setLogs(res.logs)
+      fijarMetaPag(res.total)
       setEntidades(res.entidades)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Error al cargar auditoría')
+    } finally {
+      setCargando(false)
     }
-  }, [pagina, filtros, q])
+  }, [filtros, pagParams, fijarMetaPag])
+
+  // Búsqueda libre: filtra la página actual en memoria (no recalca al servidor).
+  const logsVisibles = useMemo(() => {
+    const query = q.trim().toLowerCase()
+    if (!query) return logs
+    return logs.filter(
+      (l) =>
+        l.accion.toLowerCase().includes(query) ||
+        (l.usuario?.username ?? '').toLowerCase().includes(query) ||
+        l.entidad.toLowerCase().includes(query)
+    )
+  }, [logs, q])
 
   useEffect(() => {
     let vivo = true
@@ -88,6 +97,12 @@ export function Logs() {
     }
   }, [cargar])
 
+  /** Cambio de filtro: la paginación vuelve a la página 1 (§1). */
+  function cambiarFiltro<K extends keyof typeof filtros>(campo: K, valor: string) {
+    setFiltros((f) => ({ ...f, [campo]: valor }))
+    reiniciarPag()
+  }
+
   function exportar(formato: 'csv' | 'json') {
     const params = new URLSearchParams({ export: formato })
     if (filtros.desde) params.set('desde', filtros.desde)
@@ -101,7 +116,7 @@ export function Logs() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
-        <h1 className="text-xl font-bold">Auditoría ({total} registros)</h1>
+        <h1 className="text-xl font-bold">Auditoría ({new Intl.NumberFormat('es').format(pag.total)} registros)</h1>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={() => exportar('csv')}>
             <Download className="h-4 w-4 mr-1" /> CSV
@@ -120,13 +135,13 @@ export function Logs() {
           </div>
           <div>
             <Label className="text-xs">Desde</Label>
-            <Input type="date" className="w-36" value={filtros.desde} onChange={(e) => setFiltros((f) => ({ ...f, desde: e.target.value }))} aria-label="Desde" />
+            <Input type="date" className="w-36" value={filtros.desde} onChange={(e) => cambiarFiltro('desde', e.target.value)} aria-label="Desde" />
           </div>
           <div>
             <Label className="text-xs">Hasta</Label>
-            <Input type="date" className="w-36" value={filtros.hasta} onChange={(e) => setFiltros((f) => ({ ...f, hasta: e.target.value }))} aria-label="Hasta" />
+            <Input type="date" className="w-36" value={filtros.hasta} onChange={(e) => cambiarFiltro('hasta', e.target.value)} aria-label="Hasta" />
           </div>
-          <Select value={filtros.usuarioId} onValueChange={(v) => setFiltros((f) => ({ ...f, usuarioId: v === '__todos__' ? '' : v }))}>
+          <Select value={filtros.usuarioId} onValueChange={(v) => cambiarFiltro('usuarioId', v === '__todos__' ? '' : v)}>
             <SelectTrigger className="w-[150px]" aria-label="Usuario">
               <SelectValue placeholder="Usuario" />
             </SelectTrigger>
@@ -137,7 +152,7 @@ export function Logs() {
               ))}
             </SelectContent>
           </Select>
-          <Select value={filtros.entidad} onValueChange={(v) => setFiltros((f) => ({ ...f, entidad: v === '__todos__' ? '' : v }))}>
+          <Select value={filtros.entidad} onValueChange={(v) => cambiarFiltro('entidad', v === '__todos__' ? '' : v)}>
             <SelectTrigger className="w-[150px]" aria-label="Entidad">
               <SelectValue placeholder="Entidad" />
             </SelectTrigger>
@@ -148,7 +163,7 @@ export function Logs() {
               ))}
             </SelectContent>
           </Select>
-          <Select value={filtros.resultado} onValueChange={(v) => setFiltros((f) => ({ ...f, resultado: v === '__todos__' ? '' : v }))}>
+          <Select value={filtros.resultado} onValueChange={(v) => cambiarFiltro('resultado', v === '__todos__' ? '' : v)}>
             <SelectTrigger className="w-[130px]" aria-label="Resultado">
               <SelectValue placeholder="Resultado" />
             </SelectTrigger>
@@ -176,7 +191,8 @@ export function Logs() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {logs.map((l) => (
+              {cargando && <FilasEsqueleto columnas={7} />}
+              {!cargando && logsVisibles.map((l) => (
                 <TableRow key={l.id}>
                   <TableCell className="text-xs whitespace-nowrap">{fmtFechaHora(l.fecha)}</TableCell>
                   <TableCell className="text-sm">{l.usuario?.username ?? '—'}</TableCell>
@@ -198,7 +214,7 @@ export function Logs() {
                   </TableCell>
                 </TableRow>
               ))}
-              {logs.length === 0 && (
+              {logsVisibles.length === 0 && !cargando && (
                 <TableRow>
                   <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">Sin registros.</TableCell>
                 </TableRow>
@@ -206,19 +222,18 @@ export function Logs() {
             </TableBody>
           </Table>
         </CardContent>
+        <div className="border-t">
+          <TablePagination
+            pagina={pag.pagina}
+            totalPaginas={pag.totalPaginas}
+            total={pag.total}
+            limite={pag.limite}
+            cargando={cargando}
+            onCambiarPagina={pag.cambiarPagina}
+            onCambiarLimite={pag.cambiarLimite}
+          />
+        </div>
       </Card>
-
-      <div className="flex items-center justify-between">
-        <Button variant="outline" size="sm" disabled={pagina <= 1} onClick={() => setPagina((p) => p - 1)}>
-          Anterior
-        </Button>
-        <span className="text-sm text-muted-foreground">
-          Página {pagina} de {Math.max(1, paginas)}
-        </span>
-        <Button variant="outline" size="sm" disabled={pagina >= paginas} onClick={() => setPagina((p) => p + 1)}>
-          Siguiente
-        </Button>
-      </div>
 
       <Dialog open={!!detalle} onOpenChange={(o) => !o && setDetalle(null)}>
         <DialogContent className="max-w-lg">

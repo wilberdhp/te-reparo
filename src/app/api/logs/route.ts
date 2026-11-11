@@ -4,6 +4,7 @@ import { route, ApiError, requireAuth, csv, respuestaCsv } from '@/lib/http'
 import { serializar } from '@/lib/money'
 import { registrarLog } from '@/lib/audit'
 import { logPosSchema } from '@/lib/validaciones'
+import { paginacionDesde, metaPaginacion } from '@/lib/paginacion'
 
 /**
  * POST /api/logs — auditoría de acciones del POS EN EL CARRITO (antes de
@@ -52,8 +53,8 @@ export const GET = route(async (req: NextRequest) => {
   const accion = url.searchParams.get('accion')
   const resultado = url.searchParams.get('resultado')
   const exportar = url.searchParams.get('export')
-  const page = Math.max(1, Number(url.searchParams.get('page') ?? 1))
-  const porPagina = 100
+  // ?limit= configurable (10/25/50/100, defecto 25) — antes era fijo 100.
+  const pag = paginacionDesde(req) ?? { page: 1, limit: 25, skip: 0 }
 
   const dDesde = desde ? new Date(desde + 'T00:00:00') : null
   const dHasta = hasta ? new Date(hasta + 'T23:59:59') : null
@@ -75,7 +76,7 @@ export const GET = route(async (req: NextRequest) => {
         taller: { select: { nombre: true } },
       },
       orderBy: { fecha: 'desc' },
-      ...(exportar ? {} : { skip: (page - 1) * porPagina, take: porPagina }),
+      ...(exportar ? {} : { skip: pag.skip, take: pag.limit }),
     }),
   ])
 
@@ -112,8 +113,9 @@ export const GET = route(async (req: NextRequest) => {
         datosDespues: l.datosDespues ? JSON.parse(l.datosDespues) : null,
       })),
       total,
-      page,
-      paginas: Math.ceil(total / porPagina),
+      page: pag.page,
+      limit: pag.limit,
+      paginas: metaPaginacion(total, pag.limit).totalPages,
       entidades,
     })
   )

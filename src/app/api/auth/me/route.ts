@@ -16,11 +16,13 @@ export const GET = route(async (req: NextRequest) => {
       where: usuario.rol === 'VENDEDOR_ONLINE' ? { activo: true } : undefined,
       select: { id: true, nombre: true, activo: true },
       orderBy: { nombre: 'asc' },
+      take: 100,
     })
   } else if (usuario.tallerId) {
     talleres = await db.taller.findMany({
       where: { id: usuario.tallerId },
       select: { id: true, nombre: true, activo: true },
+      take: 1,
     })
   }
 

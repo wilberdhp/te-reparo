@@ -1,5 +1,5 @@
 'use client'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -14,6 +14,8 @@ import { api, descargar } from '@/lib/api-client'
 import { useApp } from '@/lib/store'
 import { fmt, fmtCUP, fmtFechaHora, ESTADO_VENTA_LABEL, METODO_PAGO_LABEL, RAMA_LABEL } from '@/lib/formato'
 import { useTablaTeclado } from '@/hooks/use-tabla-teclado'
+import { usePaginacion } from '@/hooks/use-paginacion'
+import { TablePagination, FilasEsqueleto } from '../table-pagination'
 import { TicketVenta, TicketPlantilla, contextoDesdeVentaDetalle } from '../ticket'
 
 interface VentaResumen {
@@ -85,6 +87,20 @@ export function Ventas() {
     metodo: '',
   })
   const [detalle, setDetalle] = useState<VentaDetalle | null>(null)
+  // Paginación del lado del servidor (fecha desc): ?ven_page=&ven_limit=
+  const pag = usePaginacion('ven')
+  const { params: pagParams, fijarMeta: fijarMetaPag, reiniciar: reiniciarPag } = pag
+
+  /** Parámetros comunes para el listado y la exportación CSV (mismos filtros). */
+  function parametrosFiltros() {
+    const params = new URLSearchParams({ tallerId: tallerId ?? '' })
+    if (filtros.q.trim()) params.set('q', filtros.q.trim())
+    if (filtros.desde) params.set('desde', filtros.desde)
+    if (filtros.hasta) params.set('hasta', filtros.hasta)
+    if (filtros.estado) params.set('estado', filtros.estado)
+    if (filtros.metodo) params.set('metodo', filtros.metodo)
+    return params
+  }
 
   // Navegación por teclado en la tabla (↑↓ Enter abre el detalle)
   const { propsFila, indice: filaSel } = useTablaTeclado({
@@ -96,24 +112,39 @@ export function Ventas() {
     if (!tallerId) return
     setCargando(true)
     try {
-      const params = new URLSearchParams({ tallerId })
-      if (filtros.desde) params.set('desde', filtros.desde)
-      if (filtros.hasta) params.set('hasta', filtros.hasta)
-      if (filtros.estado) params.set('estado', filtros.estado)
-      if (filtros.metodo) params.set('metodo', filtros.metodo)
-      const res = await api.get<{ ventas: VentaResumen[] }>(`/api/ventas?${params}`)
-      const q = filtros.q.trim().toLowerCase()
-      setVentas(q ? res.ventas.filter((v) => v.codigo.toLowerCase().includes(q) || (v.cliente?.nombre ?? '').toLowerCase().includes(q)) : res.ventas)
+      // Paginación por URL + filtros: la búsqueda por código/cliente se resuelve
+      // en el servidor junto con la paginación (antes filtraba en el cliente).
+      const params = parametrosFiltros()
+      params.set('page', pagParams.get('page') ?? '1')
+      params.set('limit', pagParams.get('limit') ?? '25')
+      const res = await api.get<{ ventas: VentaResumen[]; total: number; totalPages: number }>(`/api/ventas?${params}`)
+      setVentas(res.ventas)
+      fijarMetaPag(res.total)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Error al cargar ventas')
     } finally {
       setCargando(false)
     }
-  }, [tallerId, filtros])
+  }, [tallerId, filtros, pagParams, fijarMetaPag])
 
   useEffect(() => {
     cargar()
   }, [cargar])
+
+  // Al cambiar de taller se vuelve a la página 1.
+  const tallerPrevio = useRef(tallerId)
+  useEffect(() => {
+    if (tallerPrevio.current !== tallerId) {
+      tallerPrevio.current = tallerId
+      reiniciarPag()
+    }
+  }, [tallerId, reiniciarPag])
+
+  /** Cambio de filtro/búsqueda: la paginación vuelve a la página 1 (§1). */
+  function cambiarFiltro<K extends keyof typeof filtros>(campo: K, valor: string) {
+    setFiltros((f) => ({ ...f, [campo]: valor }))
+    reiniciarPag()
+  }
 
   async function verDetalle(id: string) {
     try {
@@ -136,11 +167,10 @@ export function Ventas() {
   }
 
   function exportar() {
-    const params = new URLSearchParams({ tallerId: tallerId ?? '', export: 'csv' })
-    if (filtros.desde) params.set('desde', filtros.desde)
-    if (filtros.hasta) params.set('hasta', filtros.hasta)
-    if (filtros.estado) params.set('estado', filtros.estado)
-    if (filtros.metodo) params.set('metodo', filtros.metodo)
+    // La exportación consulta TODOS los registros con los filtros vigentes en
+    // el servidor (§5): ya no exporta solo lo visible en la página.
+    const params = parametrosFiltros()
+    params.set('export', 'csv')
     descargar(`/api/ventas?${params}`, 'ventas.csv').catch((e) => toast.error(e.message))
   }
 
@@ -159,7 +189,7 @@ export function Ventas() {
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" aria-hidden />
             <Input
               value={filtros.q}
-              onChange={(e) => setFiltros((f) => ({ ...f, q: e.target.value }))}
+              onChange={(e) => cambiarFiltro('q', e.target.value)}
               placeholder="Código de venta o cliente…"
               className="pl-8"
               aria-label="Buscar venta"
@@ -167,13 +197,13 @@ export function Ventas() {
           </div>
           <div>
             <Label htmlFor="v-desde" className="text-xs">Desde</Label>
-            <Input id="v-desde" type="date" value={filtros.desde} onChange={(e) => setFiltros((f) => ({ ...f, desde: e.target.value }))} className="w-36" />
+            <Input id="v-desde" type="date" value={filtros.desde} onChange={(e) => cambiarFiltro('desde', e.target.value)} className="w-36" />
           </div>
           <div>
             <Label htmlFor="v-hasta" className="text-xs">Hasta</Label>
-            <Input id="v-hasta" type="date" value={filtros.hasta} onChange={(e) => setFiltros((f) => ({ ...f, hasta: e.target.value }))} className="w-36" />
+            <Input id="v-hasta" type="date" value={filtros.hasta} onChange={(e) => cambiarFiltro('hasta', e.target.value)} className="w-36" />
           </div>
-          <Select value={filtros.estado} onValueChange={(v) => setFiltros((f) => ({ ...f, estado: v === '__todos__' ? '' : v }))}>
+          <Select value={filtros.estado} onValueChange={(v) => cambiarFiltro('estado', v === '__todos__' ? '' : v)}>
             <SelectTrigger className="w-[170px]" aria-label="Estado">
               <SelectValue placeholder="Estado" />
             </SelectTrigger>
@@ -184,7 +214,7 @@ export function Ventas() {
               ))}
             </SelectContent>
           </Select>
-          <Select value={filtros.metodo} onValueChange={(v) => setFiltros((f) => ({ ...f, metodo: v === '__todos__' ? '' : v }))}>
+          <Select value={filtros.metodo} onValueChange={(v) => cambiarFiltro('metodo', v === '__todos__' ? '' : v)}>
             <SelectTrigger className="w-[160px]" aria-label="Método de pago">
               <SelectValue placeholder="Método de pago" />
             </SelectTrigger>
@@ -213,7 +243,9 @@ export function Ventas() {
               </TableRow>
             </TableHeader>
             <TableBody data-tabla="filas">
-              {ventas.map((v, i) => (
+              {cargando && <FilasEsqueleto columnas={7} />}
+              {!cargando &&
+                ventas.map((v, i) => (
                 <TableRow key={v.id} className={i === filaSel ? 'ring-2 ring-ring/60 ring-inset' : ''} {...propsFila(i)}>
                   <TableCell className="font-mono font-medium">{v.codigo}</TableCell>
                   <TableCell className="text-xs whitespace-nowrap">{fmtFechaHora(v.fecha)}</TableCell>
@@ -242,6 +274,17 @@ export function Ventas() {
             </TableBody>
           </Table>
         </CardContent>
+        <div className="border-t">
+          <TablePagination
+            pagina={pag.pagina}
+            totalPaginas={pag.totalPaginas}
+            total={pag.total}
+            limite={pag.limite}
+            cargando={cargando}
+            onCambiarPagina={pag.cambiarPagina}
+            onCambiarLimite={pag.cambiarLimite}
+          />
+        </div>
       </Card>
 
       {/* Detalle */}

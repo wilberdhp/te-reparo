@@ -18,6 +18,8 @@ import { useApp } from '@/lib/store'
 import { fmt, fmtFechaHora, ROL_LABEL, RAMA_LABEL } from '@/lib/formato'
 import { VARIABLES_PLANTILLA, CONTEXTO_MOCK, variablesUsadas } from '@/lib/plantillas'
 import { useGuardarConCtrlS } from '@/hooks/use-ctrl-s'
+import { usePaginacion } from '@/hooks/use-paginacion'
+import { TablePagination, FilasEsqueleto } from '../table-pagination'
 import { Kbd } from '../kbd'
 import { TicketPlantilla } from '../ticket'
 
@@ -58,7 +60,8 @@ export function Configuracion() {
 
   const [tab, setTab] = useState('talleres')
   const [talleres, setTalleres] = useState<Taller[]>([])
-  const [usuarios, setUsuarios] = useState<Usuario[]>([])
+  // Operarios de referencia (lista completa con tope) para los selects de
+  // formularios; la tabla usa su copia paginada (ver abajo).
   const [operarios, setOperarios] = useState<Operario[]>([])
   const [tasas, setTasas] = useState<Tasa[]>([])
   const [tasasVigentes, setTasasVigentes] = useState({ USD: 0, EUR: 0 })
@@ -95,17 +98,68 @@ export function Configuracion() {
   }>({ id: null, datos: { nombre: '', contenido: '', activo: true } })
   const contenidoRef = useRef<HTMLTextAreaElement>(null)
 
+  // ---------- Paginación de las tablas Usuarios / Operarios (§6.5) ----------
+  // El listado de la tabla se pagina en el servidor (?page=&limit=); los
+  // selects de los formularios siguen usando listas de referencia completas.
+  const pagU = usePaginacion('cfgu')
+  const { params: pagUParams, fijarMeta: fijarMetaU } = pagU
+  const [usuariosPag, setUsuariosPag] = useState<Usuario[]>([])
+  const [cargandoUsuarios, setCargandoUsuarios] = useState(true)
+
+  const pagO = usePaginacion('cfgo')
+  const { params: pagOParams, fijarMeta: fijarMetaO } = pagO
+  const [operariosPag, setOperariosPag] = useState<Operario[]>([])
+  const [cargandoOperarios, setCargandoOperarios] = useState(true)
+
+  const cargarUsuariosPag = useCallback(async () => {
+    setCargandoUsuarios(true)
+    try {
+      const params = new URLSearchParams()
+      params.set('page', pagUParams.get('page') ?? '1')
+      params.set('limit', pagUParams.get('limit') ?? '25')
+      const res = await api.get<{ usuarios: Usuario[]; total: number; totalPages: number }>(`/api/usuarios?${params}`)
+      setUsuariosPag(res.usuarios)
+      fijarMetaU(res.total)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Error al cargar usuarios')
+    } finally {
+      setCargandoUsuarios(false)
+    }
+  }, [pagUParams, fijarMetaU])
+
+  const cargarOperariosPag = useCallback(async () => {
+    setCargandoOperarios(true)
+    try {
+      const params = new URLSearchParams()
+      params.set('page', pagOParams.get('page') ?? '1')
+      params.set('limit', pagOParams.get('limit') ?? '25')
+      const res = await api.get<{ operarios: Operario[]; total: number; totalPages: number }>(`/api/operarios?${params}`)
+      setOperariosPag(res.operarios)
+      fijarMetaO(res.total)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Error al cargar operarios')
+    } finally {
+      setCargandoOperarios(false)
+    }
+  }, [pagOParams, fijarMetaO])
+
+  useEffect(() => {
+    cargarUsuariosPag()
+  }, [cargarUsuariosPag])
+
+  useEffect(() => {
+    cargarOperariosPag()
+  }, [cargarOperariosPag])
+
   const cargarTodo = useCallback(async () => {
     try {
-      const [rTalleres, rUsuarios, rOperarios, rTasas, rPlantillas] = await Promise.all([
+      const [rTalleres, rOperarios, rTasas, rPlantillas] = await Promise.all([
         api.get<{ talleres: Taller[] }>('/api/talleres'),
-        api.get<{ usuarios: Usuario[] }>('/api/usuarios'),
         api.get<{ operarios: Operario[] }>('/api/operarios'),
         api.get<{ tasas: { USD: number; EUR: number }; historial: Tasa[] }>('/api/tasas'),
         api.get<{ plantillas: Plantilla[] }>('/api/plantillas?todas=true'),
       ])
       setTalleres(rTalleres.talleres)
-      setUsuarios(rUsuarios.usuarios)
       setOperarios(rOperarios.operarios)
       setTasas(rTasas.historial)
       setTasasVigentes(rTasas.tasas)
@@ -167,7 +221,7 @@ export function Configuracion() {
         toast.success('Usuario creado')
       }
       setModalUsuario(false)
-      cargarTodo()
+      cargarUsuariosPag() // refresca la tabla SIN volver a la página 1 (§5)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Error')
     }
@@ -204,7 +258,8 @@ export function Configuracion() {
         toast.success('Operario creado')
       }
       setModalOperario(false)
-      cargarTodo()
+      cargarOperariosPag() // refresca la tabla SIN volver a la página 1 (§5)
+      cargarTodo() // refresca la lista de referencia de los selects
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Error')
     }
@@ -422,7 +477,8 @@ export function Configuracion() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {usuarios.map((u) => (
+                  {cargandoUsuarios && <FilasEsqueleto columnas={6} />}
+                  {!cargandoUsuarios && usuariosPag.map((u) => (
                     <TableRow key={u.id}>
                       <TableCell className="font-mono font-medium">{u.username}</TableCell>
                       <TableCell>{u.nombre}</TableCell>
@@ -466,9 +522,25 @@ export function Configuracion() {
                       </TableCell>
                     </TableRow>
                   ))}
+                  {!cargandoUsuarios && usuariosPag.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">Sin usuarios.</TableCell>
+                    </TableRow>
+                  )}
                 </TableBody>
               </Table>
             </CardContent>
+            <div className="border-t">
+              <TablePagination
+                pagina={pagU.pagina}
+                totalPaginas={pagU.totalPaginas}
+                total={pagU.total}
+                limite={pagU.limite}
+                cargando={cargandoUsuarios}
+                onCambiarPagina={pagU.cambiarPagina}
+                onCambiarLimite={pagU.cambiarLimite}
+              />
+            </div>
           </Card>
         </TabsContent>
 
@@ -498,7 +570,9 @@ export function Configuracion() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {operarios.map((o) => (
+                  {cargandoOperarios && <FilasEsqueleto columnas={5} />}
+                  {!cargandoOperarios &&
+                    operariosPag.map((o) => (
                     <TableRow key={o.id}>
                       <TableCell className="font-medium">{o.nombre}</TableCell>
                       <TableCell>
@@ -530,9 +604,25 @@ export function Configuracion() {
                       </TableCell>
                     </TableRow>
                   ))}
+                  {!cargandoOperarios && operariosPag.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">Sin operarios.</TableCell>
+                    </TableRow>
+                  )}
                 </TableBody>
               </Table>
             </CardContent>
+            <div className="border-t">
+              <TablePagination
+                pagina={pagO.pagina}
+                totalPaginas={pagO.totalPaginas}
+                total={pagO.total}
+                limite={pagO.limite}
+                cargando={cargandoOperarios}
+                onCambiarPagina={pagO.cambiarPagina}
+                onCambiarLimite={pagO.cambiarLimite}
+              />
+            </div>
           </Card>
         </TabsContent>
 

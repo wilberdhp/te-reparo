@@ -4,6 +4,7 @@ import { route, ApiError, requireAuth } from '@/lib/http'
 import { registrarLog } from '@/lib/audit'
 import { clienteSchema } from '@/lib/validaciones'
 import { serializar, D } from '@/lib/money'
+import { paginacionDesde, metaPaginacion } from '@/lib/paginacion'
 
 /** GET /api/clientes?q=&id= — listado global con búsqueda (homónimos permitidos). */
 export const GET = route(async (req: NextRequest) => {
@@ -57,16 +58,38 @@ export const GET = route(async (req: NextRequest) => {
     )
   }
 
+  // Listado paginado por nombre/teléfono (prompt de actualización §2):
+  // con ?page= devuelve { clientes, total, totalPages }; sin ?page= (buscador
+  // del POS, búsqueda mientras se escribe) mantiene el modo anterior.
+  const pag = paginacionDesde(req)
+  const where = q
+    ? {
+        OR: [
+          { nombre: { contains: q } },
+          { telefono: { contains: q } },
+          { ci: { contains: q } },
+        ],
+      }
+    : undefined
+
+  if (pag) {
+    const [clientes, total] = await Promise.all([
+      db.cliente.findMany({
+        where,
+        include: { _count: { select: { ventas: true } } },
+        orderBy: { nombre: 'asc' },
+        take: pag.limit,
+        skip: pag.skip,
+      }),
+      db.cliente.count({ where }),
+    ])
+    return NextResponse.json(
+      serializar({ clientes, page: pag.page, limit: pag.limit, ...metaPaginacion(total, pag.limit) })
+    )
+  }
+
   const clientes = await db.cliente.findMany({
-    where: q
-      ? {
-          OR: [
-            { nombre: { contains: q } },
-            { telefono: { contains: q } },
-            { ci: { contains: q } },
-          ],
-        }
-      : undefined,
+    where,
     include: { _count: { select: { ventas: true } } },
     orderBy: { nombre: 'asc' },
     take: 300,

@@ -13,6 +13,8 @@ import { api } from '@/lib/api-client'
 import { fmtCUP, fmtFechaHora, ESTADO_VENTA_LABEL } from '@/lib/formato'
 import { useGuardarConCtrlS } from '@/hooks/use-ctrl-s'
 import { useTablaTeclado } from '@/hooks/use-tabla-teclado'
+import { usePaginacion } from '@/hooks/use-paginacion'
+import { TablePagination, FilasEsqueleto } from '../table-pagination'
 import { Kbd } from '../kbd'
 
 interface Cliente {
@@ -53,6 +55,9 @@ export function Clientes() {
   const [clientes, setClientes] = useState<Cliente[]>([])
   const [q, setQ] = useState('')
   const [cargando, setCargando] = useState(true)
+  // Paginación del lado del servidor (búsqueda por nombre/teléfono): ?cli_page=
+  const pag = usePaginacion('cli')
+  const { params: pagParams, fijarMeta: fijarMetaPag, reiniciar: reiniciarPag } = pag
   const [modal, setModal] = useState(false)
   const [editId, setEditId] = useState<string | null>(null)
   const [form, setForm] = useState(FORM_VACIO)
@@ -70,17 +75,22 @@ export function Clientes() {
   const cargar = useCallback(async () => {
     setCargando(true)
     try {
-      const res = await api.get<{ clientes: Cliente[] }>(`/api/clientes?q=${encodeURIComponent(q)}`)
+      const params = new URLSearchParams()
+      if (q.trim()) params.set('q', q.trim())
+      params.set('page', pagParams.get('page') ?? '1')
+      params.set('limit', pagParams.get('limit') ?? '25')
+      const res = await api.get<{ clientes: Cliente[]; total: number; totalPages: number }>(`/api/clientes?${params}`)
       setClientes(res.clientes)
+      fijarMetaPag(res.total)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Error al cargar clientes')
     } finally {
       setCargando(false)
     }
-  }, [q])
+  }, [q, pagParams, fijarMetaPag])
 
   useEffect(() => {
-    const t = setTimeout(cargar, 300)
+    const t = setTimeout(cargar, 300) // debounce de la búsqueda (300 ms)
     return () => clearTimeout(t)
   }, [cargar])
 
@@ -141,7 +151,10 @@ export function Clientes() {
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" aria-hidden />
             <Input
               value={q}
-              onChange={(e) => setQ(e.target.value)}
+              onChange={(e) => {
+                setQ(e.target.value)
+                reiniciarPag() // nueva búsqueda → página 1 (§1)
+              }}
               placeholder="Buscar por nombre, teléfono o CI… (homónimos permitidos)"
               className="pl-8"
               aria-label="Buscar cliente"
@@ -164,7 +177,9 @@ export function Clientes() {
               </TableRow>
             </TableHeader>
             <TableBody data-tabla="filas">
-              {clientes.map((c, i) => (
+              {cargando && <FilasEsqueleto columnas={6} />}
+              {!cargando &&
+                clientes.map((c, i) => (
                 <TableRow key={c.id} className={i === filaSel ? 'ring-2 ring-ring/60 ring-inset' : ''} {...propsFila(i)}>
                   <TableCell className="font-medium">{c.nombre}</TableCell>
                   <TableCell>{c.telefono ?? '—'}</TableCell>
@@ -202,6 +217,17 @@ export function Clientes() {
             </TableBody>
           </Table>
         </CardContent>
+        <div className="border-t">
+          <TablePagination
+            pagina={pag.pagina}
+            totalPaginas={pag.totalPaginas}
+            total={pag.total}
+            limite={pag.limite}
+            cargando={cargando}
+            onCambiarPagina={pag.cambiarPagina}
+            onCambiarLimite={pag.cambiarLimite}
+          />
+        </div>
       </Card>
 
       {/* Modal crear/editar */}

@@ -36,21 +36,24 @@ export const POST = route(async (req: NextRequest) => {
       throw new ApiError(400, 'La liquidación ya está cerrada: no se recalcula')
     }
 
-    // Datos del día
+    // Datos del día (tope de seguridad: ningún findMany sin take)
     const [ventas, operariosTaller, ajustesRows] = await Promise.all([
       tx.venta.findMany({
         where: { tallerId: taller.id, fecha: { gte: fecha, lt: finDia(fecha) } },
         include: { items: true },
+        take: 5000,
       }),
       tx.operario.findMany({
         where: { activo: true, talleres: { some: { tallerId: taller.id } } },
+        take: 500,
       }),
-      tx.ajusteLiquidacion.findMany({ where: { liquidacionId: liquidacion.id } }),
+      tx.ajusteLiquidacion.findMany({ where: { liquidacionId: liquidacion.id }, take: 1000 }),
     ])
 
     const usuariosVinculados = await tx.usuario.findMany({
       where: { operarioId: { not: null }, activo: true },
       select: { id: true, rol: true, operarioId: true },
+      take: 500,
     })
     const onlinePorOperario = new Map(
       usuariosVinculados.filter((u) => u.rol === 'VENDEDOR_ONLINE' && u.operarioId).map((u) => [u.operarioId!, u.id])
@@ -62,10 +65,11 @@ export const POST = route(async (req: NextRequest) => {
     const vendedoresDelDia = await tx.usuario.findMany({
       where: { id: { in: ventas.map((v) => v.vendedorUsuarioId) } },
       select: { operarioId: true },
+      take: 500,
     })
     for (const u of vendedoresDelDia) if (u.operarioId) idsEnVentas.add(u.operarioId)
     const extra = idsEnVentas.size
-      ? await tx.operario.findMany({ where: { id: { in: [...idsEnVentas] } } })
+      ? await tx.operario.findMany({ where: { id: { in: [...idsEnVentas] } }, take: 500 })
       : []
 
     const operariosInfo = [

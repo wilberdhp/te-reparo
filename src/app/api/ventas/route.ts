@@ -8,6 +8,7 @@ import { serializar, D, d2, convertirACUP, tasaAplicada } from '@/lib/money'
 import { esServicio } from '@/lib/constantes'
 import { siguienteSecuencia, codigoVenta } from '@/lib/codigos'
 import { calcularPagoLinea } from '@/lib/pagos'
+import { paginacionDesde, metaPaginacion } from '@/lib/paginacion'
 
 /**
  * GET /api/ventas — historial con filtros (taller ADMIN, vendedor, cliente,
@@ -62,7 +63,9 @@ export const GET = route(async (req: NextRequest) => {
   const metodo = url.searchParams.get('metodo')
   const desde = url.searchParams.get('desde')
   const hasta = url.searchParams.get('hasta')
+  const q = url.searchParams.get('q')
   const exportar = url.searchParams.get('export')
+  const pag = paginacionDesde(req)
 
   const taller = await requireTaller(req, usuario, tallerId, { permitirInactivo: true })
 
@@ -76,20 +79,21 @@ export const GET = route(async (req: NextRequest) => {
     ...(estado ? { estado } : {}),
     ...(dDesde || dHasta ? { fecha: { ...(dDesde ? { gte: dDesde } : {}), ...(dHasta ? { lte: dHasta } : {}) } } : {}),
     ...(metodo ? { pagos: { some: { metodo } } } : {}),
+    // La búsqueda por código/cliente ahora se resuelve en el servidor para que
+    // funcione junto con la paginación (antes filtraba la página en el cliente).
+    ...(q ? { OR: [{ codigo: { contains: q } }, { cliente: { nombre: { contains: q } } }] } : {}),
   }
 
-  const ventas = await db.venta.findMany({
-    where,
-    include: {
-      cliente: { select: { nombre: true } },
-      vendedor: { select: { nombre: true, username: true } },
-      _count: { select: { items: true, pagos: true, devoluciones: true } },
-    },
-    orderBy: { fecha: 'desc' },
-    take: exportar ? 5000 : 300,
-  })
+  const include = {
+    cliente: { select: { nombre: true } },
+    vendedor: { select: { nombre: true, username: true } },
+    _count: { select: { items: true, pagos: true, devoluciones: true } },
+  }
 
+  // Exportación CSV (§5): consulta TODOS los registros que coinciden con los
+  // filtros vigentes, sin take/skip — ya no exporta "lo que hay en pantalla".
   if (exportar === 'csv') {
+    const ventas = await db.venta.findMany({ where, include, orderBy: { fecha: 'desc' } })
     const filas = ventas.map((v) => ({
       codigo: v.codigo,
       fecha: v.fecha.toISOString(),
@@ -103,6 +107,19 @@ export const GET = route(async (req: NextRequest) => {
     return respuestaCsv(csv(filas), 'ventas.csv')
   }
 
+  // Paginación del lado del servidor (§2): datos + total con los mismos filtros.
+  if (pag) {
+    const [ventas, total] = await Promise.all([
+      db.venta.findMany({ where, include, orderBy: { fecha: 'desc' }, take: pag.limit, skip: pag.skip }),
+      db.venta.count({ where }),
+    ])
+    return NextResponse.json(
+      serializar({ ventas, taller, page: pag.page, limit: pag.limit, ...metaPaginacion(total, pag.limit) })
+    )
+  }
+
+  // Modo legado sin ?page= (compatibilidad): tope anterior.
+  const ventas = await db.venta.findMany({ where, include, orderBy: { fecha: 'desc' }, take: 300 })
   return NextResponse.json(serializar({ ventas, taller }))
 })
 

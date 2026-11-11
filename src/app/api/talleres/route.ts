@@ -12,6 +12,7 @@ export const GET = route(async (req: NextRequest) => {
   const talleres = await db.taller.findMany({
     where: soloActivos ? { activo: true } : undefined,
     orderBy: { createdAt: 'asc' },
+    take: 200,
   })
   return NextResponse.json(serializar({ talleres }))
 })

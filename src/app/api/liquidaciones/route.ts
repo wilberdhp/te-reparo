@@ -34,16 +34,19 @@ export const GET = route(async (req: NextRequest) => {
 
   const porcentajeAdmin = D(await ajusteValor('porcentajeAdmin', '0'))
 
-  // Datos del día (para ABIERTA se calcula en vivo; para CERRADA es solo referencia)
+  // Datos del día (para ABIERTA se calcula en vivo; para CERRADA es solo referencia).
+  // Tope de seguridad en cada listado (regla de oro: ningún findMany sin take).
   const [ventas, operariosTaller, ajustesRows] = await Promise.all([
     db.venta.findMany({
       where: { tallerId: taller.id, fecha: { gte: fecha, lt: finDia(fecha) } },
       include: { items: true },
       orderBy: { fecha: 'asc' },
+      take: 5000,
     }),
     db.operario.findMany({
       where: { activo: true, talleres: { some: { tallerId: taller.id } } },
       include: { talleres: { select: { tallerId: true } } },
+      take: 500,
     }),
     db.ajusteLiquidacion.findMany({
       where: { liquidacionId: liquidacion.id },
@@ -52,6 +55,7 @@ export const GET = route(async (req: NextRequest) => {
         devolucion: { select: { codigo: true } },
       },
       orderBy: { id: 'asc' },
+      take: 1000,
     }),
   ])
 
@@ -59,6 +63,7 @@ export const GET = route(async (req: NextRequest) => {
   const usuariosVinculados = await db.usuario.findMany({
     where: { operarioId: { not: null }, activo: true },
     select: { id: true, rol: true, operarioId: true },
+    take: 500,
   })
   const onlinePorOperario = new Map(
     usuariosVinculados.filter((u) => u.rol === 'VENDEDOR_ONLINE' && u.operarioId).map((u) => [u.operarioId!, u.id])
@@ -71,10 +76,11 @@ export const GET = route(async (req: NextRequest) => {
   const vendedoresDelDia = await db.usuario.findMany({
     where: { id: { in: ventas.map((v) => v.vendedorUsuarioId) } },
     select: { id: true, operarioId: true, rol: true },
+    take: 500,
   })
   for (const u of vendedoresDelDia) if (u.operarioId) idsEnVentas.add(u.operarioId)
   const extra = idsEnVentas.size
-    ? await db.operario.findMany({ where: { id: { in: [...idsEnVentas] } } })
+    ? await db.operario.findMany({ where: { id: { in: [...idsEnVentas] } }, take: 500 })
     : []
 
   const operariosInfo = [
@@ -129,6 +135,7 @@ export const GET = route(async (req: NextRequest) => {
     where: { liquidacionId: liquidacion.id },
     include: { operario: { select: { nombre: true, rama: true } } },
     orderBy: { comprobanteCodigo: 'asc' },
+    take: 500,
   })
 
   return NextResponse.json(
@@ -161,6 +168,7 @@ async function lineasPersistidas(
     where: { liquidacionId },
     include: { operario: { select: { nombre: true, rama: true } } },
     orderBy: { id: 'asc' },
+    take: 500,
   })
   return {
     totalVentasDia: ventas.reduce((acc, v) => acc.plus(D(v.totalCUP)), D(0)),

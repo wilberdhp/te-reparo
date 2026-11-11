@@ -5,6 +5,7 @@ import { route, ApiError, requireAuth } from '@/lib/http'
 import { registrarLog } from '@/lib/audit'
 import { usuarioSchema, usuarioUpdateSchema } from '@/lib/validaciones'
 import { serializar } from '@/lib/money'
+import { paginacionDesde, metaPaginacion } from '@/lib/paginacion'
 
 function publico(u: {
   id?: string
@@ -27,18 +28,33 @@ function publico(u: {
   }
 }
 
-/** GET /api/usuarios — solo ADMIN. */
+/**
+ * GET /api/usuarios — solo ADMIN. Con ?page= devuelve la página pedida + total
+ * (tabla de Configuración); sin ?page= (filtro de auditoría, selects) devuelve
+ * la lista con un tope de seguridad. Ningún listado se ejecuta sin take.
+ */
 export const GET = route(async (req: NextRequest) => {
   await requireAuth(req, ['ADMIN'])
-  const usuarios = await db.usuario.findMany({
-    orderBy: { username: 'asc' },
-    select: {
-      id: true, nombre: true, username: true, rol: true,
-      tallerId: true, operarioId: true, activo: true,
-      createdAt: true,
-    },
-  })
-  const talleres = await db.taller.findMany({ select: { id: true, nombre: true } })
+  const pag = paginacionDesde(req)
+  const select = {
+    id: true, nombre: true, username: true, rol: true,
+    tallerId: true, operarioId: true, activo: true,
+    createdAt: true,
+  }
+
+  if (pag) {
+    const [usuarios, total] = await Promise.all([
+      db.usuario.findMany({ orderBy: { username: 'asc' }, select, take: pag.limit, skip: pag.skip }),
+      db.usuario.count(),
+    ])
+    const talleres = await db.taller.findMany({ select: { id: true, nombre: true }, take: 200 })
+    return NextResponse.json(
+      serializar({ usuarios, talleres, page: pag.page, limit: pag.limit, ...metaPaginacion(total, pag.limit) })
+    )
+  }
+
+  const usuarios = await db.usuario.findMany({ orderBy: { username: 'asc' }, select, take: 200 })
+  const talleres = await db.taller.findMany({ select: { id: true, nombre: true }, take: 200 })
   return NextResponse.json(serializar({ usuarios, talleres }))
 })
 

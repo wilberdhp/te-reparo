@@ -16,8 +16,10 @@ import { fmt, fmtCUP, esServicio, TIPO_PRODUCTO_LABEL, MOVIMIENTO_LABEL, fmtFech
 import { code128Svg } from '@/lib/barcode'
 import { useGuardarConCtrlS } from '@/hooks/use-ctrl-s'
 import { useTablaTeclado } from '@/hooks/use-tabla-teclado'
+import { usePaginacion } from '@/hooks/use-paginacion'
 import { ConfirmarPeligroso } from '../confirmar-peligroso'
 import { Kbd } from '../kbd'
+import { TablePagination, FilasEsqueleto } from '../table-pagination'
 
 interface Producto {
   id: string
@@ -80,6 +82,9 @@ export function Inventario() {
   const [categorias, setCategorias] = useState<string[]>([])
   const [filtros, setFiltros] = useState({ q: '', categoria: '', tipo: '', stockBajo: '', activo: 'true' })
   const [cargando, setCargando] = useState(true)
+  // Paginación del lado del servidor (prompt de actualización): ?inv_page=&inv_limit=
+  const pag = usePaginacion('inv')
+  const { params: pagParams, fijarMeta: fijarMetaPag, reiniciar: reiniciarPag } = pag
 
   const [modalProducto, setModalProducto] = useState(false)
   const [productoEdit, setProductoEdit] = useState<{ id: string | null; datos: typeof FORM_VACIO }>({ id: null, datos: FORM_VACIO })
@@ -101,24 +106,42 @@ export function Inventario() {
     setCargando(true)
     try {
       const params = new URLSearchParams({ tallerId })
+      params.set('page', pagParams.get('page') ?? '1')
+      params.set('limit', pagParams.get('limit') ?? '25')
       if (filtros.q) params.set('q', filtros.q)
       if (filtros.categoria) params.set('categoria', filtros.categoria)
       if (filtros.tipo) params.set('tipo', filtros.tipo)
       if (filtros.stockBajo) params.set('stockBajo', filtros.stockBajo)
       if (filtros.activo) params.set('activo', filtros.activo)
-      const res = await api.get<{ productos: Producto[]; categorias: string[] }>(`/api/productos?${params}`)
+      const res = await api.get<{ productos: Producto[]; categorias: string[]; total: number; totalPages: number }>(`/api/productos?${params}`)
       setProductos(res.productos)
       setCategorias(res.categorias)
+      fijarMetaPag(res.total)
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Error al cargar inventario')
     } finally {
       setCargando(false)
     }
-  }, [tallerId, filtros])
+  }, [tallerId, filtros, pagParams, fijarMetaPag])
 
   useEffect(() => {
     cargar()
   }, [cargar])
+
+  // Al cambiar de taller se vuelve a la página 1 (nuevo conjunto de datos).
+  const tallerPrevio = useRef(tallerId)
+  useEffect(() => {
+    if (tallerPrevio.current !== tallerId) {
+      tallerPrevio.current = tallerId
+      reiniciarPag()
+    }
+  }, [tallerId, reiniciarPag])
+
+  /** Cambio de filtro: reinicia la paginación a la página 1 (§1). */
+  function cambiarFiltro<K extends keyof typeof filtros>(campo: K, valor: string) {
+    setFiltros((f) => ({ ...f, [campo]: valor }))
+    reiniciarPag()
+  }
 
   useEffect(() => {
     if (esAdmin) {
@@ -318,13 +341,13 @@ export function Inventario() {
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" aria-hidden />
             <Input
               value={filtros.q}
-              onChange={(e) => setFiltros((f) => ({ ...f, q: e.target.value }))}
+              onChange={(e) => cambiarFiltro('q', e.target.value)}
               placeholder="Buscar por nombre o código…"
               className="pl-8"
               aria-label="Buscar producto"
             />
           </div>
-          <Select value={filtros.categoria} onValueChange={(v) => setFiltros((f) => ({ ...f, categoria: v === '__todos__' ? '' : v }))}>
+          <Select value={filtros.categoria} onValueChange={(v) => cambiarFiltro('categoria', v === '__todos__' ? '' : v)}>
             <SelectTrigger className="w-[160px]" aria-label="Categoría">
               <SelectValue placeholder="Categoría" />
             </SelectTrigger>
@@ -335,7 +358,7 @@ export function Inventario() {
               ))}
             </SelectContent>
           </Select>
-          <Select value={filtros.tipo} onValueChange={(v) => setFiltros((f) => ({ ...f, tipo: v === '__todos__' ? '' : v }))}>
+          <Select value={filtros.tipo} onValueChange={(v) => cambiarFiltro('tipo', v === '__todos__' ? '' : v)}>
             <SelectTrigger className="w-[170px]" aria-label="Tipo">
               <SelectValue placeholder="Tipo" />
             </SelectTrigger>
@@ -346,7 +369,7 @@ export function Inventario() {
               ))}
             </SelectContent>
           </Select>
-          <Select value={filtros.stockBajo} onValueChange={(v) => setFiltros((f) => ({ ...f, stockBajo: v === '__todos__' ? '' : v }))}>
+          <Select value={filtros.stockBajo} onValueChange={(v) => cambiarFiltro('stockBajo', v === '__todos__' ? '' : v)}>
             <SelectTrigger className="w-[150px]" aria-label="Stock bajo">
               <SelectValue placeholder="Stock" />
             </SelectTrigger>
@@ -355,7 +378,7 @@ export function Inventario() {
               <SelectItem value="true">Solo stock bajo</SelectItem>
             </SelectContent>
           </Select>
-          <Select value={filtros.activo} onValueChange={(v) => setFiltros((f) => ({ ...f, activo: v === '__todos__' ? '' : v }))}>
+          <Select value={filtros.activo} onValueChange={(v) => cambiarFiltro('activo', v === '__todos__' ? '' : v)}>
             <SelectTrigger className="w-[140px]" aria-label="Estado">
               <SelectValue placeholder="Estado" />
             </SelectTrigger>
@@ -385,7 +408,9 @@ export function Inventario() {
               </TableRow>
             </TableHeader>
             <TableBody data-tabla="filas">
-              {productosVisibles.map((p, i) => (
+              {cargando && <FilasEsqueleto columnas={esAdmin ? 8 : 6} />}
+              {!cargando &&
+                productosVisibles.map((p, i) => (
                 <TableRow
                   key={p.id}
                   className={`${!p.activo ? 'opacity-60' : ''} ${i === filaSel ? 'ring-2 ring-ring/60 ring-inset' : ''}`}
@@ -518,6 +543,17 @@ export function Inventario() {
             </TableBody>
           </Table>
         </CardContent>
+        <div className="border-t">
+          <TablePagination
+            pagina={pag.pagina}
+            totalPaginas={pag.totalPaginas}
+            total={pag.total}
+            limite={pag.limite}
+            cargando={cargando}
+            onCambiarPagina={pag.cambiarPagina}
+            onCambiarLimite={pag.cambiarLimite}
+          />
+        </div>
       </Card>
 
       {/* ============ Modal producto (crear/editar) ============ */}

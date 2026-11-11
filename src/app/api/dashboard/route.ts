@@ -31,12 +31,14 @@ export const GET = route(async (req: NextRequest) => {
         taller: { select: { nombre: true } },
         items: { include: { producto: { select: { nombre: true, tipo: true } } } },
       },
+      take: 5000,
     }),
     db.pagoVenta.findMany({
       where: { venta: { fecha: { gte: desde, lt: hasta }, tallerId: taller.id } },
       include: { venta: { select: { codigo: true } } },
+      take: 5000,
     }),
-    db.producto.findMany({ where: { tallerId: taller.id, activo: true } }),
+    db.producto.findMany({ where: { tallerId: taller.id, activo: true }, take: 5000 }),
     ajusteValor('porcentajeAdmin', '0'),
   ])
 
@@ -46,6 +48,7 @@ export const GET = route(async (req: NextRequest) => {
     const todas = await db.venta.findMany({
       where: { fecha: { gte: desde, lt: hasta } },
       include: { taller: { select: { nombre: true } } },
+      take: 5000,
     })
     const mapa = new Map<string, { total: number; cantidad: number }>()
     for (const v of todas) {
@@ -88,14 +91,17 @@ export const GET = route(async (req: NextRequest) => {
   const [operariosTaller, ajustesRows] = await Promise.all([
     db.operario.findMany({
       where: { activo: true, talleres: { some: { tallerId: taller.id } } },
+      take: 500,
     }),
     db.ajusteLiquidacion.findMany({
       where: { liquidacion: { tallerId: taller.id, fecha: desde } },
+      take: 1000,
     }),
   ])
   const usuariosVinculados = await db.usuario.findMany({
     where: { operarioId: { not: null }, activo: true },
     select: { id: true, rol: true, operarioId: true },
+    take: 500,
   })
   const onlinePorOperario = new Map(
     usuariosVinculados.filter((u) => u.rol === 'VENDEDOR_ONLINE' && u.operarioId).map((u) => [u.operarioId!, u.id])

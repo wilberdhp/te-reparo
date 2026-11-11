@@ -4,8 +4,8 @@ import { route, ApiError, requireAuth, requireTaller } from '@/lib/http'
 import { registrarLog } from '@/lib/audit'
 import { productoSchema, productoUpdateSchema } from '@/lib/validaciones'
 import { serializar, D } from '@/lib/money'
-import { esServicio } from '@/lib/constantes'
 import { codigoInternoSugerido, siguienteSecuencia, numeroTaller } from '@/lib/codigos'
+import { paginacionDesde, metaPaginacion } from '@/lib/paginacion'
 
 /** Campos sensibles: solo ADMIN (PRD §4.1). */
 function filtrarSensibles(p: Record<string, unknown>, esAdmin: boolean) {
@@ -17,6 +17,11 @@ function filtrarSensibles(p: Record<string, unknown>, esAdmin: boolean) {
 /**
  * GET /api/productos?tallerId=&categoria=&tipo=&stockBajo=&activo=&q=
  * Listado del taller activo con filtros.
+ *
+ * Paginación del lado del servidor (prompt de actualización §2): si llega
+ * ?page= se devuelve { productos, total, totalPages } con take/skip; si no
+ * llega `page` (POS: carga el listado completo para buscar/escanear) se
+ * mantiene el modo anterior con un tope de seguridad.
  */
 export const GET = route(async (req: NextRequest) => {
   const usuario = await requireAuth(req)
@@ -25,27 +30,70 @@ export const GET = route(async (req: NextRequest) => {
   const taller = await requireTaller(req, usuario, tallerId, { permitirInactivo: true })
   const { categoria, tipo, q, stockBajo } = Object.fromEntries(url.searchParams)
   const activo = url.searchParams.get('activo')
+  const pag = paginacionDesde(req)
 
+  const where: import('@prisma/client').Prisma.ProductoWhereInput = {
+    tallerId: taller.id,
+    ...(categoria ? { categoria } : {}),
+    ...(tipo ? { tipo } : {}),
+    ...(activo === 'true' || activo === 'false' ? { activo: activo === 'true' } : {}),
+    ...(q ? { OR: [{ nombre: { contains: q } }, { codigoInterno: { contains: q } }, { codigoBarras: { contains: q } }] } : {}),
+  }
+
+  // stockBajo compara dos columnas (cantidad <= stockMinimo), algo que el where
+  // de Prisma no expresa: se resuelven los ids con SQL parametrizado y después
+  // se pagina normalmente con el ORM (mismos filtros → mismo count).
+  if (stockBajo === 'true') {
+    const conActivo = activo === 'true' || activo === 'false'
+    const ids = conActivo
+      ? await db.$queryRaw<Array<{ id: string }>>`
+          SELECT id FROM Producto
+          WHERE tallerId = ${taller.id} AND tipo = 'VENTA' AND activo = ${activo === 'true'}
+            AND cantidad <= stockMinimo`
+      : await db.$queryRaw<Array<{ id: string }>>`
+          SELECT id FROM Producto
+          WHERE tallerId = ${taller.id} AND tipo = 'VENTA' AND cantidad <= stockMinimo`
+    where.id = { in: ids.map((r) => r.id) }
+  }
+
+  const categorias = (
+    await db.producto.findMany({
+      where: { tallerId: taller.id },
+      select: { categoria: true },
+      distinct: ['categoria'],
+      take: 500,
+    })
+  ).map((p) => p.categoria)
+
+  if (pag) {
+    const [productos, total] = await Promise.all([
+      db.producto.findMany({ where, orderBy: [{ activo: 'desc' }, { nombre: 'asc' }], take: pag.limit, skip: pag.skip }),
+      db.producto.count({ where }),
+    ])
+    return NextResponse.json(
+      serializar({
+        productos: productos.map((p) => filtrarSensibles(p as unknown as Record<string, unknown>, usuario.rol === 'ADMIN')),
+        categorias,
+        page: pag.page,
+        limit: pag.limit,
+        ...metaPaginacion(total, pag.limit),
+      })
+    )
+  }
+
+  // Modo legado (POS): listado completo del taller con tope de seguridad —
+  // el POS busca/escanea sobre este listado, no se pagina (regla de oro).
   const productos = await db.producto.findMany({
-    where: {
-      tallerId: taller.id,
-      ...(categoria ? { categoria } : {}),
-      ...(tipo ? { tipo } : {}),
-      ...(activo === 'true' || activo === 'false' ? { activo: activo === 'true' } : {}),
-      ...(q ? { OR: [{ nombre: { contains: q } }, { codigoInterno: { contains: q } }, { codigoBarras: { contains: q } }] } : {}),
-    },
+    where,
     orderBy: [{ activo: 'desc' }, { nombre: 'asc' }],
+    take: 5000,
   })
-
-  const filtrados = stockBajo === 'true'
-    ? productos.filter((p) => !esServicio(p.tipo) && p.cantidad <= p.stockMinimo)
-    : productos
-
-  const categorias = [...new Set(productos.map((p) => p.categoria))]
-  return NextResponse.json(serializar({
-    productos: filtrados.map((p) => filtrarSensibles(p as unknown as Record<string, unknown>, usuario.rol === 'ADMIN')),
-    categorias,
-  }))
+  return NextResponse.json(
+    serializar({
+      productos: productos.map((p) => filtrarSensibles(p as unknown as Record<string, unknown>, usuario.rol === 'ADMIN')),
+      categorias,
+    })
+  )
 })
 
 /** POST /api/productos — crear (ADMIN completo; VENDEDOR sin campos sensibles). */

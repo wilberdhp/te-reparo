@@ -37,6 +37,7 @@ export const GET = route(async (req: NextRequest) => {
   const ajustes = await db.ajusteLiquidacion.findMany({
     where: { liquidacionId: liquidacion.id, operarioId: pago.operarioId },
     include: { devolucion: { select: { codigo: true } } },
+    take: 1000,
   })
 
   // Detalle de ventas propias (vendedor en línea)
@@ -52,6 +53,7 @@ export const GET = route(async (req: NextRequest) => {
     const ventas = await db.venta.findMany({
       where: { vendedorUsuarioId: usuarioVinculado.id, tallerId: liquidacion.tallerId, fecha: { gte: desde, lt: hasta } },
       select: { codigo: true, totalCUP: true },
+      take: 1000,
     })
     ventasPropias = ventas.map((v) => ({ codigo: v.codigo, totalCUP: D(v.totalCUP).toFixed(2) }))
   }

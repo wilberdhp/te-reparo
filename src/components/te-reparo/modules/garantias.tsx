@@ -58,6 +58,21 @@ interface GarantiaLista {
   movimiento: { tipo: string; cantidad: number; nota: string } | null
 }
 
+/** Garantía otorgada por una venta (ítem vendido con días de garantía > 0). */
+interface GarantiaVenta {
+  id: string
+  cantidad: number
+  cantidadDevuelta: number
+  garantiaDias: number
+  subtotalCUP: number
+  producto: { id: string; nombre: string; tipo: string }
+  operario: { nombre: string; rama: string } | null
+  venta: { codigo: string; fecha: string; cliente: { id: string; nombre: string } | null }
+  vence: string | null
+  vigente: boolean
+  reclamos: number
+}
+
 export function Garantias() {
   const usuario = useApp((s) => s.usuario)
   const tallerActivoId = useApp((s) => s.tallerActivoId)
@@ -72,16 +87,25 @@ export function Garantias() {
   const [form, setForm] = useState({ descripcion: '', tipo: 'REPARACION', productoReemplazoId: '', cantidadReemplazo: '1' })
   const [productos, setProductos] = useState<Producto[]>([])
   const [garantias, setGarantias] = useState<GarantiaLista[]>([])
+  const [garantiasVentas, setGarantiasVentas] = useState<GarantiaVenta[]>([])
   const [procesando, setProcesando] = useState(false)
+  // Fecha de la venta del ítem en reclamo (para calcular el vencimiento) — puede
+  // venir del diálogo de venta buscada o directamente de la tabla de garantías.
+  const [ventaFechaSel, setVentaFechaSel] = useState<string | null>(null)
 
   const cargarGarantias = useCallback(async () => {
+    if (!tallerId) return
     try {
-      const res = await api.get<{ garantias: GarantiaLista[] }>('/api/garantias')
+      const res = await api.get<{ garantias: GarantiaLista[]; garantiasVentas: GarantiaVenta[] }>(
+        `/api/garantias?tallerId=${tallerId}`
+      )
       setGarantias(res.garantias)
+      setGarantiasVentas(res.garantiasVentas ?? [])
     } catch {
       setGarantias([])
+      setGarantiasVentas([])
     }
-  }, [])
+  }, [tallerId])
 
   useEffect(() => {
     cargarGarantias()
@@ -113,8 +137,9 @@ export function Garantias() {
     }
   }
 
-  async function abrirReclamo(item: VentaItemDetalle) {
+  async function abrirReclamo(item: VentaItemDetalle, ventaFecha: string) {
     setItemSel(item)
+    setVentaFechaSel(ventaFecha)
     setForm({ descripcion: '', tipo: 'REPARACION', productoReemplazoId: '', cantidadReemplazo: '1' })
     if (tallerId) {
       const res = await api.get<{ productos: Producto[] }>(`/api/productos?tallerId=${tallerId}&activo=true`)
@@ -122,9 +147,27 @@ export function Garantias() {
     }
   }
 
+  // Reclamar directamente desde la tabla de garantías de ventas (sin buscar el
+  // código de la venta a mano).
+  function reclamarGarantiaVenta(g: GarantiaVenta) {
+    abrirReclamo(
+      {
+        id: g.id,
+        cantidad: g.cantidad,
+        cantidadDevuelta: g.cantidadDevuelta,
+        garantiaDiasSnapshot: g.garantiaDias,
+        subtotalCUP: g.subtotalCUP,
+        producto: { id: g.producto.id, nombre: g.producto.nombre, tipo: g.producto.tipo },
+        operario: g.operario,
+        garantias: [],
+      },
+      g.venta.fecha
+    )
+  }
+
   const vence = itemSel
     ? itemSel.garantiaDiasSnapshot > 0
-      ? new Date(new Date(ventaAbierta?.fecha ?? '').getTime() + itemSel.garantiaDiasSnapshot * 86400000)
+      ? new Date(new Date(ventaFechaSel ?? '').getTime() + itemSel.garantiaDiasSnapshot * 86400000)
       : null
     : null
   const vigente = vence ? vence >= new Date() : false
@@ -159,10 +202,65 @@ export function Garantias() {
     <div className="space-y-4">
       <h1 className="text-xl font-bold">Garantías</h1>
 
+      {/* Garantías otorgadas por ventas del taller */}
+      <Card>
+        <CardContent className="p-0 overflow-x-auto">
+          <div className="px-3 pt-3 pb-2 text-sm text-muted-foreground">
+            Garantías otorgadas por ventas: cada ítem vendido con días de garantía aparece aquí
+            (puede registrar un reclamo directamente desde la fila).
+          </div>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Venta</TableHead>
+                <TableHead>Fecha</TableHead>
+                <TableHead>Producto</TableHead>
+                <TableHead>Cliente</TableHead>
+                <TableHead>Garantía</TableHead>
+                <TableHead>Vence</TableHead>
+                <TableHead>Estado</TableHead>
+                <TableHead className="text-center">Reclamos</TableHead>
+                <TableHead />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {garantiasVentas.map((g) => (
+                <TableRow key={g.id}>
+                  <TableCell className="font-mono text-xs">{g.venta.codigo}</TableCell>
+                  <TableCell className="text-xs whitespace-nowrap">{fmtFechaHora(g.venta.fecha)}</TableCell>
+                  <TableCell className="text-sm font-medium">{g.producto.nombre}</TableCell>
+                  <TableCell className="text-xs">{g.venta.cliente?.nombre ?? 'Consumidor final'}</TableCell>
+                  <TableCell className="text-xs num-tabular">{g.garantiaDias} días</TableCell>
+                  <TableCell className="text-xs whitespace-nowrap">{g.vence ? fmtFechaHora(g.vence).slice(0, 10) : '—'}</TableCell>
+                  <TableCell>
+                    <Badge variant={g.vigente ? 'default' : 'destructive'} className="text-xs">
+                      {g.vigente ? 'Vigente' : 'Vencida'}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="text-xs num-tabular text-center">{g.reclamos}</TableCell>
+                  <TableCell>
+                    <Button size="sm" variant="outline" onClick={() => reclamarGarantiaVenta(g)} disabled={g.cantidadDevuelta >= g.cantidad}>
+                      <ShieldCheck className="h-4 w-4 mr-1" /> Reclamar
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+              {garantiasVentas.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={9} className="text-center py-8 text-muted-foreground">
+                    Sin garantías otorgadas por ventas aún.
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
       <Card>
         <CardContent className="p-3 space-y-3">
           <p className="text-sm text-muted-foreground">
-            Busque la venta y registre el reclamo sobre el ítem correspondiente (REPARACIÓN o REEMPLAZO).
+            ¿No aparece en la tabla? Busque la venta por código y registre el reclamo sobre el ítem correspondiente (REPARACIÓN o REEMPLAZO).
           </p>
           <div className="relative">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" aria-hidden />
@@ -209,7 +307,7 @@ export function Garantias() {
                     {it.garantias.length > 0 && <span className="text-warning"> · {it.garantias.length} reclamo(s)</span>}
                   </div>
                 </div>
-                <Button size="sm" variant="outline" onClick={() => abrirReclamo(it)} disabled={it.cantidadDevuelta >= it.cantidad}>
+                <Button size="sm" variant="outline" onClick={() => abrirReclamo(it, ventaAbierta?.fecha ?? '')} disabled={it.cantidadDevuelta >= it.cantidad}>
                   <ShieldCheck className="h-4 w-4 mr-1" /> Reclamar
                 </Button>
               </div>

@@ -94,6 +94,26 @@ describe('Liquidación diaria por rama (PRD §4.6)', () => {
     expect(admin?.montoCUP.toNumber()).toBe(0)
   })
 
+  test('ADMIN con líneas asignadas cobra sus líneas ADEMÁS del porcentajeAdmin (fix: pago 5% ignorado)', () => {
+    const ventasAdmin = [
+      venta('v1', '1500', 'usr-v1', [
+        ['op-admin', 1, '1000', 'PORCENTAJE', '5'], // 5% de 1000 = 50
+        [null, 1, '500', 'FIJO', '50'], // sin operario asignado: no genera pago
+      ]),
+    ]
+    // porcentajeAdmin 0 → el admin cobra solo sus líneas: 50
+    const r1 = calcularLiquidacion({ ventas: ventasAdmin, operarios, ajustes: [], porcentajeAdmin: D(0) })
+    const admin1 = r1.lineas.find((l) => l.operarioId === 'op-admin')
+    expect(admin1?.montoCUP.toString()).toBe('50')
+    expect(admin1?.detalle.lineas).toBe(1)
+
+    // porcentajeAdmin 5 → líneas (50) + 5% del día (75) = 125
+    const r2 = calcularLiquidacion({ ventas: ventasAdmin, operarios, ajustes: [], porcentajeAdmin: D(5) })
+    const admin2 = r2.lineas.find((l) => l.operarioId === 'op-admin')
+    expect(admin2?.montoCUP.toString()).toBe('125')
+    expect(admin2?.tipo).toBe('ADMIN_PCT')
+  })
+
   test('Ajustes negativos (devoluciones post-cierre) se restan de la línea del operario', () => {
     const r = calcularLiquidacion({
       ventas,

@@ -240,7 +240,8 @@ export function Liquidaciones() {
                         {l.tipo === 'GRUPO' && `base del día: ${fmt(l.detalle.base ?? 0)} CUP (íntegro a cada vendedor activo)`}
                         {l.tipo === 'INDIVIDUAL' && `${l.detalle.lineas ?? 0} líneas · reparto equitativo ref.: ${fmt(l.detalle.repartoEquitativo ?? 0)}`}
                         {l.tipo === 'ONLINE' && `${l.detalle.ventas ?? 0} ventas propias · ${l.detalle.lineas ?? 0} líneas`}
-                        {l.tipo === 'ADMIN_PCT' && `${datos.porcentajeAdmin}% × ${fmt(l.detalle.base ?? 0)} CUP`}
+                        {l.tipo === 'ADMIN_PCT' &&
+                          `${datos.porcentajeAdmin}% × ${fmt(l.detalle.base ?? 0)} CUP${(l.detalle.lineas ?? 0) > 0 ? ` · + ${l.detalle.lineas} línea(s) asignada(s)` : ''}`}
                         {l.tipo === 'AJUSTE' && 'devoluciones post-cierre'}
                         {(l.detalle.ajustes?.length ?? 0) > 0 && (
                           <div className="text-destructive">

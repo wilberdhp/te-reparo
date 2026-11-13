@@ -9,7 +9,8 @@
 //    (total del día ÷ técnicos activos del taller) y NO afecta el monto pagado.
 //  - VENDEDOR_ONLINE: pago individual por sus propias ventas del día en ese taller
 //    (líneas asignadas a su operario), sin regla grupal.
-//  - ADMIN: porcentajeAdmin × total vendido del taller ese día (default 0).
+//  - ADMIN: porcentajeAdmin × total vendido del taller ese día (default 0) MÁS el
+//    pago individual de las líneas de venta que tenga asignadas (snapshot).
 //  - Los ajustes (devoluciones post-cierre) se restan de la línea del operario.
 import { Decimal, d2 } from './money'
 import { calcularPagoLinea } from './pagos'
@@ -182,17 +183,23 @@ export function calcularLiquidacion(input: {
         },
       }
     } else if (op.rama === 'ADMIN') {
-      const monto = d2(totalVentasDia.times(porcentajeAdmin).dividedBy(100))
+      // El admin cobra el porcentajeAdmin global sobre el total del día MÁS el
+      // pago de las líneas de venta que tenga asignadas (snapshot del producto).
+      // Antes las líneas asignadas a un operario ADMIN se ignoraban: una venta
+      // con pago PORCENTAJE (p. ej. 5%) asignada al admin liquidaba en 0.
+      const ind = acumuladoIndividual(op.id, ventas)
+      const pct = d2(totalVentasDia.times(porcentajeAdmin).dividedBy(100))
       linea = {
         operarioId: op.id,
         operarioNombre: op.nombre,
         rama: op.rama,
         tipo: 'ADMIN_PCT',
-        montoCUP: monto,
+        montoCUP: d2(ind.monto.plus(pct)),
         detalle: {
-          tipo: 'Porcentaje del admin sobre el total del taller',
+          tipo: 'Porcentaje del admin + líneas asignadas',
           base: totalVentasDia.toFixed(2),
-          formula: `${porcentajeAdmin.toFixed(2)}% × total del día`,
+          lineas: ind.lineas,
+          formula: `${porcentajeAdmin.toFixed(2)}% × total del día + Σ pagoOperario de líneas asignadas`,
         },
       }
     }

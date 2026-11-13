@@ -7,16 +7,28 @@ import { serializar, D } from '@/lib/money'
 import { esServicio } from '@/lib/constantes'
 
 /**
- * GET /api/garantias?clienteId= | ?ventaItemId= | ?q= — reclamos con vencimiento.
+ * GET /api/garantias?tallerId=&clienteId=&ventaItemId=
+ * Devuelve dos listas:
+ *  - `garantiasVentas`: garantías OTORGADAS por ventas (ítems vendidos con
+ *    días de garantía > 0, con vencimiento y vigencia). Es lo que permite ver
+ *    en la sección de Garantías una venta recién hecha de un producto con
+ *    garantía (antes solo existían los reclamos y la venta no aparecía).
+ *  - `garantias`: reclamos registrados (historial), con vencimiento.
  */
 export const GET = route(async (req: NextRequest) => {
-  await requireAuth(req)
+  const usuario = await requireAuth(req)
   const url = new URL(req.url)
   const clienteId = url.searchParams.get('clienteId')
   const ventaItemId = url.searchParams.get('ventaItemId')
+  const tallerIdParam = url.searchParams.get('tallerId')
+
+  const taller = await requireTaller(req, usuario, tallerIdParam, { permitirInactivo: true })
 
   const garantias = await db.garantia.findMany({
-    where: ventaItemId ? { ventaItemId } : undefined,
+    where: {
+      ...(ventaItemId ? { ventaItemId } : {}),
+      ventaItem: { venta: { tallerId: taller.id, ...(clienteId ? { clienteId } : {}) } },
+    },
     include: {
       ventaItem: {
         include: {
@@ -36,12 +48,8 @@ export const GET = route(async (req: NextRequest) => {
     take: 300,
   })
 
-  const filtradas = clienteId
-    ? garantias.filter((g) => g.ventaItem.venta.cliente?.id === clienteId)
-    : garantias
-
   const hoy = new Date()
-  const conVencimiento = filtradas.map((g) => {
+  const conVencimiento = garantias.map((g) => {
     const fechaVenta = new Date(g.ventaItem.venta.fecha)
     const vence =
       g.ventaItem.garantiaDiasSnapshot > 0
@@ -50,7 +58,41 @@ export const GET = route(async (req: NextRequest) => {
     return { ...g, vence, vigente: vence ? vence >= hoy : false }
   })
 
-  return NextResponse.json(serializar({ garantias: conVencimiento }))
+  // Garantías otorgadas por ventas del taller (ítems con garantíaDiasSnapshot > 0).
+  // Tope de seguridad (regla de oro: ningún findMany sin take).
+  const itemsConGarantia = await db.ventaItem.findMany({
+    where: { garantiaDiasSnapshot: { gt: 0 }, venta: { tallerId: taller.id } },
+    include: {
+      producto: { select: { id: true, nombre: true, tipo: true } },
+      operario: { select: { nombre: true, rama: true } },
+      venta: { select: { codigo: true, fecha: true, cliente: { select: { id: true, nombre: true } } } },
+      garantias: { select: { id: true } },
+    },
+    orderBy: { venta: { fecha: 'desc' } },
+    take: 500,
+  })
+  // Un ítem totalmente devuelto no conserva garantía.
+  const garantiasVentas = itemsConGarantia
+    .filter((it) => it.cantidadDevuelta < it.cantidad)
+    .map((it) => {
+      const fechaVenta = new Date(it.venta.fecha)
+      const vence = new Date(fechaVenta.getTime() + it.garantiaDiasSnapshot * 86400000)
+      return {
+        id: it.id,
+        cantidad: it.cantidad,
+        cantidadDevuelta: it.cantidadDevuelta,
+        garantiaDias: it.garantiaDiasSnapshot,
+        subtotalCUP: it.subtotalCUP,
+        producto: it.producto,
+        operario: it.operario,
+        venta: it.venta,
+        vence,
+        vigente: vence >= hoy,
+        reclamos: it.garantias.length,
+      }
+    })
+
+  return NextResponse.json(serializar({ garantias: conVencimiento, garantiasVentas }))
 })
 
 /**

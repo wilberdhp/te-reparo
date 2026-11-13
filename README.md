@@ -51,7 +51,7 @@ pagos a operarios, configuración y auditoría completa.
 
 | Variable | Descripción | Ejemplo |
 |---|---|---|
-| `DATABASE_URL` | Cadena de conexión Prisma | `file:./db/custom.db` (dev) o `postgresql://...` (prod) |
+| `DATABASE_URL` | Cadena de conexión PostgreSQL | `postgresql://tereparo@localhost:5432/tereparo?schema=public` (dev, PostgreSQL embebido) o la del proveedor (prod) |
 | `AUTH_SECRET` | Secreto para firmar el JWT de sesión (generar con `openssl rand -hex 32`) | hex aleatorio |
 | `TZ` | Zona horaria del servidor (define el "día" de liquidación) | `America/Havana` |
 
@@ -59,11 +59,19 @@ pagos a operarios, configuración y auditoría completa.
 
 ```bash
 bun install
+bun run db:init          # primera vez: arranca el PostgreSQL embebido y crea la BD
 bun run db:push          # crea el esquema en la base de datos
 bun run db:seed          # admin + taller piloto + tasas + ajustes + demo
-bun run dev              # http://localhost:3000
+bun run dev              # http://localhost:3000 (arranca PostgreSQL si estaba parado)
 bun test                 # tests de moneda, pagos, liquidación y flujo de venta
 ```
+
+La base de datos de desarrollo es **PostgreSQL 18 embebido** (paquete npm
+`embedded-postgres`, binarios oficiales; corre sin root y solo escucha en
+`localhost:5432`). Gestión: `bun run db:start | db:stop | db:status` — los datos
+viven en `db/postgres/` (ignorado por git). Venía de una instalación SQLite y
+tiene datos viejos: `bun run db:migrar-sqlite` los pasa a PostgreSQL
+(`scripts/migrar-sqlite-a-postgres.ts`).
 
 **Credenciales del seed:** usuario `admin` / contraseña `TeReparo2026!`
 (cámbiela desde Configuración → Usuarios en el primer arranque).
@@ -134,9 +142,10 @@ tests/                      # money / pagos / liquidación / plantillas (unitari
    requieren vincular usuario↔operario (pago individual del vendedor en línea y regla
    grupal) y el PRD exige que todo vendedor sea operario.
 2. La base grupal es el total de TODAS las ventas del taller ese día.
-3. En SQLite (desarrollo) los enums del PRD se guardan como `String` validados con Zod,
-   y los campos JSON como texto; en PostgreSQL pueden ser enums/Json nativos
-   (`docs/DEPLOY.md`).
+3. Los enums del PRD se guardan como `String` validados con Zod y los campos
+   JSON como texto — no dependen del motor (desde la v0.7.0 el desarrollo usa
+   PostgreSQL, igual que producción; convertir a enums/`Json` nativos sigue
+   siendo opcional, ver `docs/DEPLOY.md`).
 4. `Ajuste` (clave/valor) guarda `ticketAncho`, `ticketEncabezado`, `ticketPie`,
    `porcentajeAdmin`, exigidos por §5.9 del PRD.
 
@@ -209,4 +218,4 @@ bun test   # 28 pruebas: conversión de monedas, cálculo de pagos, reglas de
 ## Despliegue
 
 Ver **`docs/DEPLOY.md`** (VPS o Railway, PostgreSQL, backups diarios automáticos +
-export manual, variables de entorno, migración desde SQLite).
+export manual, variables de entorno, migración de datos desde un SQLite antiguo).

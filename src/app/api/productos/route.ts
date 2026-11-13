@@ -52,16 +52,18 @@ export const GET = route(async (req: NextRequest) => {
   // stockBajo compara dos columnas (cantidad <= stockMinimo), algo que el where
   // de Prisma no expresa: se resuelven los ids con SQL parametrizado y después
   // se pagina normalmente con el ORM (mismos filtros → mismo count).
+  // PostgreSQL crea las tablas con identificadores citados ("Producto",
+  // "tallerId"…): sin comillas los plegaría a minúsculas y no las encontraría.
   if (stockBajo === 'true') {
     const conActivo = activo === 'true' || activo === 'false'
     const ids = conActivo
       ? await db.$queryRaw<Array<{ id: string }>>`
-          SELECT id FROM Producto
-          WHERE tallerId = ${taller.id} AND tipo = 'VENTA' AND activo = ${activo === 'true'}
-            AND cantidad <= stockMinimo`
+          SELECT id FROM "Producto"
+          WHERE "tallerId" = ${taller.id} AND tipo = 'VENTA' AND activo = ${activo === 'true'}
+            AND cantidad <= "stockMinimo"`
       : await db.$queryRaw<Array<{ id: string }>>`
-          SELECT id FROM Producto
-          WHERE tallerId = ${taller.id} AND tipo = 'VENTA' AND cantidad <= stockMinimo`
+          SELECT id FROM "Producto"
+          WHERE "tallerId" = ${taller.id} AND tipo = 'VENTA' AND cantidad <= "stockMinimo"`
     where.id = { in: ids.map((r) => r.id) }
   }
 

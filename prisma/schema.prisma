@@ -1,17 +1,17 @@
 // Te Reparo — Esquema Prisma
-// Nota de portabilidad: en el entorno de desarrollo se usa SQLite, que no soporta
-// enums nativos de Prisma ni campos Json. Por eso los enums del PRD se modelan como
-// String y se validan con Zod en servidor (ver src/lib/validaciones.ts), y los campos
-// JSON (datosAntes/datosDespues, detalle) se guardan como String con JSON.stringify.
-// Para desplegar en PostgreSQL: cambiar provider a "postgresql", convertir los String
-// de enums a `enum` nativos y los String JSON a `Json` (ver docs/DEPLOY.md).
+// Nota: PostgreSQL desde v0.7.0 (antes SQLite). Los enums del PRD se mantienen
+// como String y se validan con Zod en servidor (ver src/lib/validaciones.ts),
+// y los campos JSON (datosAntes/datosDespues, detalle) como String con
+// JSON.stringify — no dependen del motor, así el código es idéntico en ambos.
+// En PostgreSQL `String` mapea a `text` (sin límite de longitud).
+// El SQL crudo debe citar identificadores camelCase: FROM "Producto" WHERE "tallerId"…
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -411,8 +411,7 @@ model AuditLog {
 // El contenido admite variables dinámicas {{...}} que el motor de reemplazo
 // (src/lib/plantillas.ts) resuelve al imprimir. Los saltos de línea escritos
 // por el administrador se respetan tal cual al imprimir.
-// Nota SQLite: `contenido` es String (SQLite no tiene @db.Text); en PostgreSQL
-// usar `String @db.Text`.
+// Nota: `contenido` es String (en PostgreSQL mapea a `text`, sin límite).
 model PlantillaTicket {
   id        String   @id @default(cuid())
   nombre    String // Ej: "Recepción de Equipo", "Venta de Accesorio"

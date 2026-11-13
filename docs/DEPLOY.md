@@ -68,20 +68,12 @@ sudo nginx -t && sudo systemctl reload nginx
 # HTTPS: certbot --nginx
 ```
 
-## 3. Migración del esquema: SQLite → PostgreSQL
+## 3. Migración de datos desde un SQLite antiguo
 
-El proyecto se desarrolló sobre SQLite (sandbox). El schema es portable; para
-PostgreSQL realice estos cambios en `prisma/schema.prisma`:
-
-```prisma
-datasource db {
-  provider = "postgresql"   // era "sqlite"
-  url      = env("DATABASE_URL")
-}
-```
-
-Y opcionalmente convierta a tipos nativos (el código ya valida todo con Zod, por lo
-que funciona igual sin convertir):
+Desde la v0.7.0 el proyecto usa **PostgreSQL también en desarrollo** (embebido,
+sin root: `bun run db:init`; el esquema ya está en `provider = "postgresql"`).
+Las conversiones a tipos nativos siguen siendo opcionales (el código valida todo
+con Zod, funciona igual sin convertirlas):
 
 - Los campos `String` de enums (`Rol`, `Rama`, `TipoProducto`, …) pueden convertirse a
   `enum` nativos de Prisma con los valores del PRD (ver comentario superior del schema).
@@ -89,8 +81,19 @@ que funciona igual sin convertir):
   `String` a `Json`.
 - Puede añadir precisión a los Decimal: `@db.Decimal(14, 2)`.
 
-Después: `bunx prisma db push` (o `bunx prisma migrate dev --name inicial`) y
-`bun run db:seed`.
+Si conserva una base SQLite de la etapa anterior (p. ej. `db/custom.db`), el
+script oficial de migración copia todas las tablas conservando ids y contadores:
+
+```bash
+bun run db:init                       # PostgreSQL embebido arrancado y BD vacía
+bun run db:push                       # esquema creado
+bun run db:migrar-sqlite              # scripts/migrar-sqlite-a-postgres.ts
+# (o: bun run db:migrar-sqlite ruta/a/otra.db)
+```
+
+El script exige la BD destino vacía, copia en una única transacción con orden
+topológico de FKs y verifica conteos tabla por tabla antes de dar por buena la
+migración.
 
 > Nota: el código fuente NO depende de valores de enum a nivel de base de datos —
 > toda la validación de dominio está en `src/lib/validaciones.ts` (Zod, servidor).

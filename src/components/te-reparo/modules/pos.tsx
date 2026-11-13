@@ -99,6 +99,9 @@ function focoEnCampo(): boolean {
   return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (el as HTMLElement).getAttribute('role') === 'option'
 }
 
+// Tamaño de página del catálogo del POS (LIMITES_PAGINA de la API: 10/25/50/100)
+const LIMINA_POS = 50
+
 export function Pos() {
   const usuario = useApp((s) => s.usuario)
   const tasas = useApp((s) => s.tasas)
@@ -124,7 +127,18 @@ export function Pos() {
   const tallerId = usuario?.rol === 'VENDEDOR' ? usuario.tallerId : tallerActivoId ?? talleres[0]?.id
   const taller = talleres.find((t) => t.id === tallerId)
 
+  // Catálogo paginado en servidor (scroll infinito): nunca se pide el listado
+  // completo de golpe — página 1 al entrar/cambiar taller/buscar, y el resto
+  // bajo demanda al hacer scroll (antes: 1.300+ productos de una vez).
   const [productos, setProductos] = useState<Producto[]>([])
+  const [totalProductos, setTotalProductos] = useState(0)
+  const [totalPaginas, setTotalPaginas] = useState(1)
+  const [cargando, setCargando] = useState(true)
+  const [cargandoMas, setCargandoMas] = useState(false)
+  const paginaRef = useRef(0)
+  const secuenciaRef = useRef(0)
+  const centinelaRef = useRef<HTMLDivElement>(null)
+  const rejillaRef = useRef<HTMLDivElement>(null)
   const [operarios, setOperarios] = useState<Operario[]>([])
   // Plantillas de ticket activas para el selector junto a «Cobrar»
   const [plantillas, setPlantillas] = useState<Plantilla[]>([])
@@ -163,18 +177,66 @@ export function Pos() {
   const pagosActivos = carrito ? pagos[carrito.id] ?? [] : []
   const items = carrito?.items ?? []
 
-  const cargarProductos = useCallback(async () => {
-    if (!tallerId) return
-    try {
-      const res = await api.get<{ productos: Producto[] }>(`/api/productos?tallerId=${tallerId}&activo=true`)
-      setProductos(res.productos)
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Error al cargar productos')
-    }
-  }, [tallerId])
+  const cargarProductos = useCallback(
+    async (pagina: number, q: string) => {
+      if (!tallerId) return
+      const seq = ++secuenciaRef.current
+      if (pagina === 1) setCargando(true)
+      else setCargandoMas(true)
+      try {
+        const params = new URLSearchParams({
+          tallerId,
+          activo: 'true',
+          page: String(pagina),
+          limit: String(LIMINA_POS),
+        })
+        if (q.trim()) params.set('q', q.trim())
+        const res = await api.get<{ productos: Producto[]; total: number; totalPages: number }>(
+          `/api/productos?${params}`
+        )
+        // Respuesta obsoleta (el usuario siguió escribiendo o cambió de taller)
+        if (seq !== secuenciaRef.current) return
+        setProductos((prev) => (pagina === 1 ? res.productos : [...prev, ...res.productos]))
+        setTotalProductos(res.total)
+        setTotalPaginas(res.totalPages)
+        paginaRef.current = pagina
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : 'Error al cargar productos')
+      } finally {
+        if (seq === secuenciaRef.current) {
+          setCargando(false)
+          setCargandoMas(false)
+        }
+      }
+    },
+    [tallerId]
+  )
+
+  // Carga inicial, cambio de taller y cada búsqueda confirmada (debounce 300 ms):
+  // la lista se pide al servidor por páginas — nunca el catálogo completo.
+  useEffect(() => {
+    void cargarProductos(1, busquedaEfectiva)
+  }, [cargarProductos, busquedaEfectiva])
+
+  // Scroll infinito: al asomar el centinela al final de la rejilla se pide la
+  // página siguiente y se añade abajo (la búsqueda del servidor ya filtra).
+  const hayMas = productos.length < totalProductos
+  useEffect(() => {
+    const centinela = centinelaRef.current
+    const rejilla = rejillaRef.current
+    if (!centinela || !rejilla || !hayMas || cargando || cargandoMas) return
+    const obs = new IntersectionObserver(
+      (entradas) => {
+        if (entradas[0]?.isIntersecting) void cargarProductos(paginaRef.current + 1, busquedaEfectiva)
+      },
+      { root: rejilla, rootMargin: '300px' }
+    )
+    obs.observe(centinela)
+    return () => obs.disconnect()
+  }, [cargarProductos, hayMas, cargando, cargandoMas, busquedaEfectiva])
 
   useEffect(() => {
-    cargarProductos()
+    // (los productos los carga el efecto de paginación al detectar el taller)
     if (tallerId) {
       api
         .get<{ operarios: Operario[] }>(`/api/operarios?tallerId=${tallerId}`)
@@ -202,22 +264,9 @@ export function Pos() {
     setLineaSel(-1)
   }, [carrito?.id])
 
-  const filtrarPor = useCallback(
-    (q: string): Producto[] => {
-      const t = q.trim().toLowerCase()
-      if (!t) return productos
-      return productos.filter(
-        (p) =>
-          p.nombre.toLowerCase().includes(t) ||
-          p.codigoInterno.toLowerCase().includes(t) ||
-          p.codigoBarras.toLowerCase().includes(t) ||
-          p.categoria.toLowerCase().includes(t)
-      )
-    },
-    [productos]
-  )
-
-  const productosFiltrados = useMemo(() => filtrarPor(busquedaEfectiva), [filtrarPor, busquedaEfectiva])
+  // El filtrado por nombre/código/categoría lo hace el servidor con ?q= sobre
+  // cada página (busquedaEfectiva ya viene con debounce de 300 ms); aquí solo
+  // se pinta lo acumulado por el scroll infinito.
 
   const totales = useMemo(() => {
     if (!carrito) return { cup: 0, usd: 0 }
@@ -296,7 +345,9 @@ export function Pos() {
 
   function agregarProducto(p: Producto) {
     if (!tallerId) return
-    const stockDisponible = productos.find((x) => x.id === p.id)?.cantidad ?? 0
+    // El stock llega con el propio producto (página de la rejilla o búsqueda
+    // del servidor); como respaldo se mira lo ya cargado en memoria.
+    const stockDisponible = p.cantidad ?? productos.find((x) => x.id === p.id)?.cantidad ?? 0
     const enCarrito = carrito?.items.find((i) => i.productoId === p.id)?.cantidad ?? 0
     if (!esServicio(p.tipo) && enCarrito >= stockDisponible) {
       toast.error(`Stock insuficiente de ${p.nombre} (disponible ${stockDisponible})`)
@@ -319,27 +370,31 @@ export function Pos() {
     sonidoExito()
   }
 
-  /** Enter del buscador: código exacto del lector o primer resultado manual. */
-  function alEnterBuscador() {
+  /**
+   * Enter del buscador: código exacto del lector o primer resultado manual.
+   * Con el catálogo paginado en servidor la coincidencia se resuelve contra
+   * la API (el producto escaneado puede no estar en la página cargada).
+   */
+  async function alEnterBuscador() {
     const q = busqueda.trim()
-    if (!q) return
-    // 1) Coincidencia exacta de código de barras o código interno (lector HID)
-    const exacto = productos.find(
-      (x) => x.codigoBarras.toLowerCase() === q.toLowerCase() || x.codigoInterno.toLowerCase() === q.toLowerCase()
-    )
-    if (exacto) {
-      agregarProducto(exacto)
-      setBusqueda('')
-      return
+    if (!q || !tallerId) return
+    try {
+      const params = new URLSearchParams({ tallerId, activo: 'true', q, page: '1', limit: String(LIMINA_POS) })
+      const res = await api.get<{ productos: Producto[] }>(`/api/productos?${params}`)
+      const lista = res.productos
+      // 1) Coincidencia exacta de código de barras o código interno (lector HID)
+      const exacto = lista.find(
+        (x) => x.codigoBarras.toLowerCase() === q.toLowerCase() || x.codigoInterno.toLowerCase() === q.toLowerCase()
+      )
+      const elegido = exacto ?? lista[0]
+      if (elegido) {
+        agregarProducto(elegido)
+        setBusqueda('')
+        return
+      }
+    } catch {
+      // Sin respuesta del servidor se cae al mensaje de no encontrado
     }
-    // 2) Primer resultado de la búsqueda manual
-    const resultados = filtrarPor(q)
-    if (resultados.length > 0) {
-      agregarProducto(resultados[0])
-      setBusqueda('')
-      return
-    }
-    // 3) Sin resultados: error rápido, mantener el foco para reintentar
     toast.error(`Código no encontrado: ${q}`)
     sonidoError()
     busquedaRef.current?.select()
@@ -482,7 +537,9 @@ export function Pos() {
       })
       nuevoCarrito(tallerId)
       setLineaSel(-1)
-      await cargarProductos()
+      // Se recarga la página 1 (con la búsqueda activa): stocks al día para el
+      // siguiente cliente; el servidor valida el stock de la venta igualmente.
+      await cargarProductos(1, busquedaEfectiva)
       // El buscador vuelve a quedar listo para el siguiente escaneo
       setTimeout(() => busquedaRef.current?.focus(), 50)
     } catch (err) {
@@ -729,8 +786,12 @@ export function Pos() {
           </CardContent>
         </Card>
 
-        <div data-tabla="filas" className="grid sm:grid-cols-2 xl:grid-cols-3 gap-2 max-h-[calc(100vh-330px)] overflow-y-auto pr-1">
-          {productosFiltrados.map((p) => {
+        <div
+          ref={rejillaRef}
+          data-tabla="filas"
+          className="grid sm:grid-cols-2 xl:grid-cols-3 gap-2 max-h-[calc(100vh-330px)] overflow-y-auto pr-1"
+        >
+          {productos.map((p) => {
             const precioCUP = aCUP(p.precio, p.monedaPrecio, tasas)
             const sinStock = !esServicio(p.tipo) && p.cantidad <= 0
             return (
@@ -765,9 +826,21 @@ export function Pos() {
               </button>
             )
           })}
-          {productosFiltrados.length === 0 && (
+          {productos.length === 0 && !cargando && (
             <p className="col-span-full text-sm text-muted-foreground py-8 text-center">
               No se encontraron productos{busqueda ? ' para esa búsqueda' : ' en este taller'}.
+            </p>
+          )}
+          {(cargando || cargandoMas) && (
+            <p className="col-span-full text-sm text-muted-foreground py-4 text-center animate-pulse" role="status">
+              Cargando productos…
+            </p>
+          )}
+          {/* Centinela del scroll infinito: al asomarse pide la página siguiente */}
+          {hayMas && !cargando && <div ref={centinelaRef} className="col-span-full h-1" aria-hidden />}
+          {productos.length > 0 && (
+            <p className="col-span-full text-[11px] text-muted-foreground text-center pb-1">
+              {hayMas ? `Mostrando ${productos.length} de ${totalProductos} productos — baje para ver más` : `${totalProductos} ${totalProductos === 1 ? 'producto' : 'productos'}`}
             </p>
           )}
         </div>

@@ -36,7 +36,7 @@ export function contextoDesdeVentaDetalle(detalle: {
   venta: {
     taller: { nombre: string; direccion: string; telefono: string }
     cliente: { nombre: string; ci?: string | null; telefono?: string | null } | null
-    vendedor: { nombre: string }
+    vendedor: { nombre: string } | null
     codigo: string
     fecha: string
     totalCUP: number
@@ -61,7 +61,7 @@ export function contextoDesdeVentaDetalle(detalle: {
       codigo: v.codigo,
       fecha: v.fecha,
       totalCUP: v.totalCUP,
-      vendedorNombre: v.vendedor.nombre,
+      vendedorNombre: v.vendedor?.nombre ?? '',
     },
     items: v.items.map((i) => ({
       nombre: i.producto.nombre,

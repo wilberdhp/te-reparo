@@ -37,7 +37,16 @@ export const GET = route(async (req: NextRequest) => {
     ...(categoria ? { categoria } : {}),
     ...(tipo ? { tipo } : {}),
     ...(activo === 'true' || activo === 'false' ? { activo: activo === 'true' } : {}),
-    ...(q ? { OR: [{ nombre: { contains: q } }, { codigoInterno: { contains: q } }, { codigoBarras: { contains: q } }] } : {}),
+    ...(q
+      ? {
+          OR: [
+            { nombre: { contains: q } },
+            { codigoInterno: { contains: q } },
+            { codigoBarras: { contains: q } },
+            { categoria: { contains: q } },
+          ],
+        }
+      : {}),
   }
 
   // stockBajo compara dos columnas (cantidad <= stockMinimo), algo que el where

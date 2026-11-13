@@ -1,60 +1,164 @@
 import { PrismaClient } from '@prisma/client'
 import bcrypt from 'bcryptjs'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const db = new PrismaClient()
 
-// Seed inicial de "Te Reparo": admin, taller piloto, operarios, tasas y ajustes.
-// Ejecutar con: bun prisma/seed.ts   (o `bun run db:seed`)
+// Seed de "Te Reparo": dos talleres reales (República y La Caridad), operarios,
+// usuarios y el inventario del taller República cargado desde
+// prisma/productos-republica.json (generado a partir de
+// "inventario republica organizado.xlsx" — ver scripts/generar-json-inventario.py).
+// Ejecutar con: bun run db:seed
+//
+// Notas de liquidación (PRD §4.6):
+//  - Los vendedores presenciales (Javier, Ivan, Andrew) cobran por regla grupal
+//    (total vendido del taller) → se enlazan SOLO a su taller.
+//  - Lili (vendedora en línea) cobra por sus propias ventas del taller donde se
+//    facturen → enlazada a ambos talleres; su usuario VendedorEnLinea
+//    (rol VENDEDOR_ONLINE) DEBE estar enlazado a su operario para que la regla
+//    ONLINE la detecte.
+//  - Ranset/Ransei/Raydel (rama ADMIN) cobran porcentajeAdmin × total del día +
+//    sus líneas asignadas → enlazados a ambos talleres. OJO: si porcentajeAdmin
+//    se configura > 0, CADA operario ADMIN del taller recibe el porcentaje
+//    completo (quedará 3× el % si los tres siguen enlazados).
+
+interface ProductoSeed {
+  codigoInterno: string
+  codigoBarras: string
+  categoria: string
+  nombre: string
+  tipo: string // VENTA | SERVICIO_ELECTRONICA | SERVICIO_INFORMATICA
+  cantidad: number
+  costo: number
+  unidad: string
+  stockMinimo: number
+  precio: number
+  monedaPrecio: string // CUP | USD | EUR
+  pagoOperarioTipo: string // FIJO | PORCENTAJE
+  pagoOperarioValor: number
+  garantiaDias: number
+}
+
 async function main() {
-  // ---------- Taller piloto ----------
-  const taller = await db.taller.upsert({
-    where: { id: 'taller-piloto' },
+  // ---------- Talleres ----------
+  const republica = await db.taller.upsert({
+    where: { id: 'taller-republica' },
     update: {},
     create: {
-      id: 'taller-piloto',
-      nombre: 'Taller Piloto — Te Reparo',
-      direccion: 'Calle Ejemplo No. 1, La Habana',
-      telefono: '+53 5 000 0000',
+      id: 'taller-republica',
+      nombre: 'Te Reparo - República',
+      direccion: 'Por configurar',
+      telefono: 'Por configurar',
+      activo: true,
+    },
+  })
+  const laCaridad = await db.taller.upsert({
+    where: { id: 'taller-lacaridad' },
+    update: {},
+    create: {
+      id: 'taller-lacaridad',
+      nombre: 'Te Reparo - La Caridad',
+      direccion: 'Por configurar',
+      telefono: 'Por configurar',
       activo: true,
     },
   })
 
-  // ---------- Operario ADMIN (para el pago por porcentaje del admin) ----------
-  const operarioAdmin = await db.operario.upsert({
-    where: { id: 'operario-admin' },
-    update: {},
-    create: {
-      id: 'operario-admin',
-      nombre: 'Administrador',
-      rama: 'ADMIN',
-      activo: true,
-    },
-  })
-  await db.operarioTaller.upsert({
-    where: { operarioId_tallerId: { operarioId: operarioAdmin.id, tallerId: taller.id } },
-    update: {},
-    create: { operarioId: operarioAdmin.id, tallerId: taller.id },
-  })
+  // ---------- Operarios ----------
+  // [id, nombre, rama, talleres a los que pertenece]
+  const operarios: Array<[string, string, string, string[]]> = [
+    ['operario-juan', 'Juan', 'INFORMATICO', [republica.id]],
+    ['operario-wilber', 'Wilber', 'INFORMATICO', [republica.id]],
+    ['operario-milton', 'Milton', 'ELECTRONICO', [republica.id]],
+    ['operario-raul', 'Raul', 'ELECTRONICO', [laCaridad.id]],
+    ['operario-danilo', 'Danilo', 'INFORMATICO', [laCaridad.id]],
+    ['operario-ivan', 'Ivan', 'VENDEDOR', [laCaridad.id]],
+    ['operario-andrew', 'Andrew', 'VENDEDOR', [laCaridad.id]],
+    ['operario-javier', 'Javier', 'VENDEDOR', [republica.id]],
+    ['operario-lili', 'Lili', 'VENDEDOR', [republica.id, laCaridad.id]],
+    ['operario-ranset', 'Ranset', 'ADMIN', [republica.id, laCaridad.id]],
+    ['operario-ransei', 'Ransei', 'ADMIN', [republica.id, laCaridad.id]],
+    ['operario-raydel', 'Raydel', 'ADMIN', [republica.id, laCaridad.id]],
+  ]
+  for (const [id, nombre, rama, talleres] of operarios) {
+    await db.operario.upsert({
+      where: { id },
+      update: {},
+      create: { id, nombre, rama, activo: true },
+    })
+    for (const tallerId of talleres) {
+      await db.operarioTaller.upsert({
+        where: { operarioId_tallerId: { operarioId: id, tallerId } },
+        update: {},
+        create: { operarioId: id, tallerId },
+      })
+    }
+  }
 
-  // ---------- Usuario admin (admin / TeReparo2026!) ----------
-  const passwordHash = bcrypt.hashSync('TeReparo2026!', 10)
-  await db.usuario.upsert({
-    where: { username: 'admin' },
-    update: {},
-    create: {
-      username: 'admin',
-      nombre: 'Administrador',
-      passwordHash,
-      rol: 'ADMIN',
-      tallerId: null,
-      operarioId: operarioAdmin.id,
-      activo: true,
-    },
-  })
+  // ---------- Usuarios ----------
+  const passAdmin = bcrypt.hashSync('Admin.2026*', 10)
+  const passVendedor = bcrypt.hashSync('Vendedor.2026*', 10)
+  // [username, nombre, rol, passwordHash, tallerId, operarioId]
+  const usuarios: Array<[string, string, string, string, string | null, string | null]> = [
+    ['Ranset', 'Ranset', 'ADMIN', passAdmin, null, 'operario-ranset'],
+    ['Raydel', 'Raydel', 'ADMIN', passAdmin, null, 'operario-raydel'],
+    ['Ransei', 'Ransei', 'ADMIN', passAdmin, null, 'operario-ransei'],
+    ['VendedorRepublica', 'Vendedor República', 'VENDEDOR', passVendedor, republica.id, null],
+    ['VendedorLaCaridad', 'Vendedor La Caridad', 'VENDEDOR', passVendedor, laCaridad.id, null],
+    ['VendedorEnLinea', 'Vendedor en Línea', 'VENDEDOR_ONLINE', passVendedor, null, 'operario-lili'],
+  ]
+  for (const [username, nombre, rol, passwordHash, tallerId, operarioId] of usuarios) {
+    await db.usuario.upsert({
+      where: { username },
+      update: {},
+      create: { username, nombre, passwordHash, rol, tallerId, operarioId, activo: true },
+    })
+  }
+
+  // ---------- Inventario del taller República (desde el JSON) ----------
+  const rutaJson = path.join(path.dirname(fileURLToPath(import.meta.url)), 'productos-republica.json')
+  const { taller: tallerJson, productos } = JSON.parse(readFileSync(rutaJson, 'utf-8')) as {
+    taller: string
+    productos: ProductoSeed[]
+  }
+  if (tallerJson !== republica.nombre) {
+    throw new Error(`El JSON de productos pertenece a "${tallerJson}", pero el seed esperaba "${republica.nombre}"`)
+  }
+  const existentes = new Set(
+    (
+      await db.producto.findMany({
+        where: { tallerId: republica.id, codigoInterno: { in: productos.map((p) => p.codigoInterno) } },
+        select: { codigoInterno: true },
+      })
+    ).map((p) => p.codigoInterno)
+  )
+  let creados = 0
+  for (const p of productos) {
+    if (existentes.has(p.codigoInterno)) continue // re-ejecución: no sobrescribir ediciones
+    const producto = await db.producto.create({
+      data: { ...p, tallerId: republica.id, activo: true },
+    })
+    creados++
+    if (p.cantidad > 0) {
+      await db.movimientoInventario.create({
+        data: {
+          productoId: producto.id,
+          tipo: 'ENTRADA',
+          cantidad: p.cantidad,
+          costoUnitario: p.costo,
+          nota: 'Carga inicial de inventario (seed)',
+        },
+      })
+    }
+  }
 
   // ---------- Tasas de cambio iniciales (actualizables desde la app) ----------
-  // Valores por defecto editables — verificar/actualizar al comenzar a operar.
-  for (const [moneda, valor] of [['USD', 440], ['EUR', 470]] as const) {
+  for (const [moneda, valor] of [
+    ['USD', 440],
+    ['EUR', 470],
+  ] as const) {
     const existente = await db.tasaCambio.findFirst({
       where: { moneda },
       orderBy: { fechaVigencia: 'desc' },
@@ -132,114 +236,15 @@ async function main() {
     }
   }
 
-  // ---------- Datos demo mínimos para probar el taller piloto ----------
-  const hayProductos = await db.producto.count({ where: { tallerId: taller.id } })
-  if (hayProductos === 0) {
-    const demo = [
-      {
-        codigoInterno: 'T1-000001',
-        codigoBarras: 'T1-000001',
-        categoria: 'Pantallas',
-        nombre: 'Pantalla LCD Xiaomi Redmi 9C',
-        tipo: 'VENTA',
-        cantidad: 10,
-        costo: 1800,
-        unidad: 'u',
-        stockMinimo: 3,
-        precio: 2600,
-        monedaPrecio: 'CUP',
-        pagoOperarioTipo: 'FIJO',
-        pagoOperarioValor: 200,
-        garantiaDias: 30,
-      },
-      {
-        codigoInterno: 'T1-000002',
-        codigoBarras: 'T1-000002',
-        categoria: 'Baterías',
-        nombre: 'Batería Samsung A12 (5000 mAh)',
-        tipo: 'VENTA',
-        cantidad: 8,
-        costo: 900,
-        unidad: 'u',
-        stockMinimo: 2,
-        precio: 1500,
-        monedaPrecio: 'CUP',
-        pagoOperarioTipo: 'PORCENTAJE',
-        pagoOperarioValor: 10,
-        garantiaDias: 60,
-      },
-      {
-        codigoInterno: 'T1-000003',
-        codigoBarras: 'T1-000003',
-        categoria: 'Accesorios',
-        nombre: 'Protector de vidrio templado universal',
-        tipo: 'VENTA',
-        cantidad: 25,
-        costo: 120,
-        unidad: 'u',
-        stockMinimo: 5,
-        precio: 400,
-        monedaPrecio: 'CUP',
-        pagoOperarioTipo: 'FIJO',
-        pagoOperarioValor: 50,
-        garantiaDias: 0,
-      },
-      {
-        codigoInterno: 'T1-000004',
-        codigoBarras: 'T1-000004',
-        categoria: 'Servicios',
-        nombre: 'Cambio de pantalla (manodeobra)',
-        tipo: 'SERVICIO_ELECTRONICA',
-        cantidad: 0,
-        costo: 0,
-        unidad: 'serv',
-        stockMinimo: 0,
-        precio: 800,
-        monedaPrecio: 'CUP',
-        pagoOperarioTipo: 'PORCENTAJE',
-        pagoOperarioValor: 50,
-        garantiaDias: 30,
-      },
-      {
-        codigoInterno: 'T1-000005',
-        codigoBarras: 'T1-000005',
-        categoria: 'Servicios',
-        nombre: 'Instalación de software / flasheo',
-        tipo: 'SERVICIO_INFORMATICA',
-        cantidad: 0,
-        costo: 0,
-        unidad: 'serv',
-        stockMinimo: 0,
-        precio: 1200,
-        monedaPrecio: 'CUP',
-        pagoOperarioTipo: 'PORCENTAJE',
-        pagoOperarioValor: 60,
-        garantiaDias: 15,
-      },
-    ]
-    for (const p of demo) {
-      await db.producto.create({ data: { ...p, tallerId: taller.id, activo: true } })
-    }
-    // Movimiento ENTRADA inicial para los productos con stock
-    for (const p of demo.filter((d) => d.tipo === 'VENTA')) {
-      await db.movimientoInventario.create({
-        data: {
-          productoId: (await db.producto.findFirst({
-            where: { tallerId: taller.id, codigoInterno: p.codigoInterno },
-          }))!.id,
-          tipo: 'ENTRADA',
-          cantidad: p.cantidad,
-          costoUnitario: p.costo,
-          nota: 'Stock inicial (seed)',
-        },
-      })
-    }
-  }
-
   console.log('Seed completado:')
-  console.log('  Admin:      usuario "admin" / contraseña "TeReparo2026!"')
-  console.log('  Taller:     ' + taller.nombre)
-  console.log('  Tasas:      USD=440 CUP, EUR=470 CUP (editables desde la app)')
+  console.log(`  Talleres:    ${republica.nombre} · ${laCaridad.nombre}`)
+  console.log('  Operarios:   12 (3 informáticos, 2 electrónicos, 4 vendedores, 1 en línea, 3 admin)')
+  console.log('  Usuarios:')
+  console.log('    Ranset / Raydel / Ransei                Administrador        Admin.2026*')
+  console.log('    VendedorRepublica / VendedorLaCaridad  Vendedor             Vendedor.2026*')
+  console.log('    VendedorEnLinea                        Vendedor en línea    Vendedor.2026*')
+  console.log(`  Productos:   ${creados} creados en ${republica.nombre} (JSON: ${productos.length})`)
+  console.log('  Tasas:       USD=440 CUP, EUR=470 CUP (editables desde la app)')
 }
 
 main()

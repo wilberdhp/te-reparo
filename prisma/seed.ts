@@ -101,12 +101,13 @@ async function main() {
   const passAdmin = bcrypt.hashSync('Admin.2026*', 10)
   const passVendedor = bcrypt.hashSync('Vendedor.2026*', 10)
   // [username, nombre, rol, passwordHash, tallerId, operarioId]
+  // Nota: la app exige vincular usuarios VENDEDOR a un operario (/api/usuarios).
   const usuarios: Array<[string, string, string, string, string | null, string | null]> = [
     ['Ranset', 'Ranset', 'ADMIN', passAdmin, null, 'operario-ranset'],
     ['Raydel', 'Raydel', 'ADMIN', passAdmin, null, 'operario-raydel'],
     ['Ransei', 'Ransei', 'ADMIN', passAdmin, null, 'operario-ransei'],
-    ['VendedorRepublica', 'Vendedor República', 'VENDEDOR', passVendedor, republica.id, null],
-    ['VendedorLaCaridad', 'Vendedor La Caridad', 'VENDEDOR', passVendedor, laCaridad.id, null],
+    ['VendedorRepublica', 'Vendedor República', 'VENDEDOR', passVendedor, republica.id, 'operario-javier'],
+    ['VendedorLaCaridad', 'Vendedor La Caridad', 'VENDEDOR', passVendedor, laCaridad.id, 'operario-ivan'],
     ['VendedorEnLinea', 'Vendedor en Línea', 'VENDEDOR_ONLINE', passVendedor, null, 'operario-lili'],
   ]
   for (const [username, nombre, rol, passwordHash, tallerId, operarioId] of usuarios) {

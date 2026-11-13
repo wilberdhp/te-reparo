@@ -10,6 +10,7 @@ import { toast } from 'sonner'
 import { Printer, RefreshCw } from 'lucide-react'
 import { api } from '@/lib/api-client'
 import { useApp } from '@/lib/store'
+import { fechaCorta } from '@/lib/fecha'
 import { fmt, fmtCUP, fmtFechaHora, RAMA_LABEL } from '@/lib/formato'
 import { ConfirmarPeligroso } from '../confirmar-peligroso'
 import { TicketComprobante } from '../ticket'
@@ -84,10 +85,10 @@ export function Liquidaciones() {
   const esAdmin = usuario?.rol === 'ADMIN'
   const tallerId = usuario?.rol === 'VENDEDOR' ? usuario.tallerId : tallerActivoId ?? talleres[0]?.id
 
-  const [fecha, setFecha] = useState(() => {
-    const d = new Date()
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-  })
+  // Día civil en la zona del NEGOCIO (no la del navegador): entre la medianoche
+  // de Cuba y la del servidor/navegador pueden diferir, y la liquidación del día
+  // debe abrirse sobre el mismo día con el que el servidor agrupa las ventas.
+  const [fecha, setFecha] = useState(() => fechaCorta())
   const [datos, setDatos] = useState<LiquidacionData | null>(null)
   const [cargando, setCargando] = useState(true)
   const [cerrando, setCerrando] = useState(false)

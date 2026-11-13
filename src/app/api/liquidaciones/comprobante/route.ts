@@ -3,7 +3,7 @@ import { db } from '@/lib/db'
 import { route, ApiError, requireAuth, requireTaller } from '@/lib/http'
 import { serializar, D } from '@/lib/money'
 import { RAMA_LABEL } from '@/lib/constantes'
-import { fechaCorta } from '@/lib/fecha'
+import { etiquetaDeClave, ventanaDia } from '@/lib/fecha'
 
 /**
  * GET /api/liquidaciones/comprobante?pagoId= — datos del comprobante de pago
@@ -47,11 +47,10 @@ export const GET = route(async (req: NextRequest) => {
     select: { id: true },
   })
   if (usuarioVinculado) {
-    const desde = new Date(liquidacion.fecha)
-    const hasta = new Date(desde)
-    hasta.setDate(hasta.getDate() + 1)
+    // Ventana del día civil de la liquidación en la zona del negocio
+    const { inicio, fin } = ventanaDia(etiquetaDeClave(liquidacion.fecha))
     const ventas = await db.venta.findMany({
-      where: { vendedorUsuarioId: usuarioVinculado.id, tallerId: liquidacion.tallerId, fecha: { gte: desde, lt: hasta } },
+      where: { vendedorUsuarioId: usuarioVinculado.id, tallerId: liquidacion.tallerId, fecha: { gte: inicio, lt: fin } },
       select: { codigo: true, totalCUP: true },
       take: 1000,
     })
@@ -67,7 +66,7 @@ export const GET = route(async (req: NextRequest) => {
         codigo: pago.comprobanteCodigo,
         fechaPago: pago.fechaPago,
         montoCUP: D(pago.montoCUP),
-        fechaLiquidacion: fechaCorta(liquidacion.fecha),
+        fechaLiquidacion: etiquetaDeClave(liquidacion.fecha),
         estadoLiquidacion: liquidacion.estado,
         operario: {
           nombre: pago.operario.nombre,

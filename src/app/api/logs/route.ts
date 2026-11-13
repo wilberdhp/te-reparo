@@ -5,6 +5,7 @@ import { serializar } from '@/lib/money'
 import { registrarLog } from '@/lib/audit'
 import { logPosSchema } from '@/lib/validaciones'
 import { paginacionDesde, metaPaginacion } from '@/lib/paginacion'
+import { ventanaDia } from '@/lib/fecha'
 
 /**
  * POST /api/logs — auditoría de acciones del POS EN EL CARRITO (antes de
@@ -56,11 +57,12 @@ export const GET = route(async (req: NextRequest) => {
   // ?limit= configurable (10/25/50/100, defecto 25) — antes era fijo 100.
   const pag = paginacionDesde(req) ?? { page: 1, limit: 25, skip: 0 }
 
-  const dDesde = desde ? new Date(desde + 'T00:00:00') : null
-  const dHasta = hasta ? new Date(hasta + 'T23:59:59') : null
+  // Filtros por fecha civil en la zona del negocio (no la del servidor)
+  const dDesde = desde ? ventanaDia(desde).inicio : null
+  const dHasta = hasta ? ventanaDia(hasta).fin : null
 
   const where = {
-    ...(dDesde || dHasta ? { fecha: { ...(dDesde ? { gte: dDesde } : {}), ...(dHasta ? { lte: dHasta } : {}) } } : {}),
+    ...(dDesde || dHasta ? { fecha: { ...(dDesde ? { gte: dDesde } : {}), ...(dHasta ? { lt: dHasta } : {}) } } : {}),
     ...(usuarioId ? { usuarioId } : {}),
     ...(entidad ? { entidad } : {}),
     ...(accion ? { accion: { contains: accion } } : {}),

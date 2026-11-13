@@ -6,7 +6,7 @@ import { cerrarLiquidacionSchema } from '@/lib/validaciones'
 import { serializar, D } from '@/lib/money'
 import { calcularLiquidacion } from '@/lib/liquidacion'
 import { costoAdicionalEnCUP } from '@/lib/pagos'
-import { inicioDia, finDia, parseFechaCorta } from '@/lib/fecha'
+import { parseFechaCorta, claveHoy, ventanaDia, etiquetaDeClave } from '@/lib/fecha'
 import { ajusteValor } from '@/lib/ajustes'
 import { siguienteSecuencia, codigoComprobante } from '@/lib/codigos'
 
@@ -19,7 +19,9 @@ import { siguienteSecuencia, codigoComprobante } from '@/lib/codigos'
 export const POST = route(async (req: NextRequest) => {
   const usuario = await requireAuth(req, ['ADMIN'])
   const datos = cerrarLiquidacionSchema.parse(await req.json())
-  const fecha = parseFechaCorta(datos.fecha) ?? inicioDia()
+  const fecha = parseFechaCorta(datos.fecha) ?? claveHoy()
+  // Ventana del día civil en la zona del negocio (ver lib/fecha.ts)
+  const { inicio: inicioVentana, fin: finVentana } = ventanaDia(etiquetaDeClave(fecha))
   const taller = await requireTaller(req, usuario, datos.tallerId, { permitirInactivo: true })
   const porcentajeAdmin = D(await ajusteValor('porcentajeAdmin', '0'))
 
@@ -39,7 +41,7 @@ export const POST = route(async (req: NextRequest) => {
     // Datos del día (tope de seguridad: ningún findMany sin take)
     const [ventas, operariosTaller, ajustesRows] = await Promise.all([
       tx.venta.findMany({
-        where: { tallerId: taller.id, fecha: { gte: fecha, lt: finDia(fecha) } },
+        where: { tallerId: taller.id, fecha: { gte: inicioVentana, lt: finVentana } },
         include: { items: true },
         take: 5000,
       }),

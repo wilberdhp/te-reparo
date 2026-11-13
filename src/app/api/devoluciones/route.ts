@@ -6,7 +6,7 @@ import { devolucionSchema } from '@/lib/validaciones'
 import { serializar, D, d2 } from '@/lib/money'
 import { esServicio } from '@/lib/constantes'
 import { siguienteSecuencia, codigoDevolucion } from '@/lib/codigos'
-import { inicioDia } from '@/lib/fecha'
+import { claveHoy, claveDiaSiguiente } from '@/lib/fecha'
 import { calcularPagoLinea } from '@/lib/pagos'
 
 /**
@@ -233,7 +233,9 @@ async function resolverLiquidacionAjuste(
   codigo: string,
   _motivo: string
 ): Promise<{ id: string }> {
-  const hoy = inicioDia()
+  // Clave del día civil en la zona del negocio (medianoche UTC de la etiqueta,
+  // estable en BD — ver lib/fecha.ts)
+  const hoy = claveHoy()
   const liqHoy = await tx.liquidacionOperario.findUnique({
     where: { tallerId_fecha: { tallerId, fecha: hoy } },
   })
@@ -246,8 +248,7 @@ async function resolverLiquidacionAjuste(
   }
 
   // Cerrada → día siguiente (se crea si no existe)
-  const manana = new Date(hoy)
-  manana.setDate(manana.getDate() + 1)
+  const manana = claveDiaSiguiente(hoy)
   const liqManana = await tx.liquidacionOperario.findUnique({
     where: { tallerId_fecha: { tallerId, fecha: manana } },
   })

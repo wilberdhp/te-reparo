@@ -4,7 +4,7 @@ import { route, ApiError, requireAuth, requireTaller } from '@/lib/http'
 import { serializar, D } from '@/lib/money'
 import { calcularLiquidacion } from '@/lib/liquidacion'
 import { costoAdicionalEnCUP } from '@/lib/pagos'
-import { inicioDia, finDia, parseFechaCorta, fechaCorta } from '@/lib/fecha'
+import { parseFechaCorta, claveHoy, ventanaDia, etiquetaDeClave } from '@/lib/fecha'
 import { ajusteValor } from '@/lib/ajustes'
 
 /**
@@ -18,7 +18,11 @@ export const GET = route(async (req: NextRequest) => {
   const url = new URL(req.url)
   const tallerId = url.searchParams.get('tallerId')
   const fechaParam = url.searchParams.get('fecha')
-  const fecha = parseFechaCorta(fechaParam) ?? inicioDia()
+  // Clave del día (medianoche UTC de la etiqueta, estable en BD); la ventana
+  // de ventas se calcula en la zona del negocio (p. ej. Cuba), no en la del
+  // servidor: una venta de las 19:11 de Cuba pertenece a SU día civil.
+  const fecha = parseFechaCorta(fechaParam) ?? claveHoy()
+  const { inicio: inicioVentana, fin: finVentana } = ventanaDia(etiquetaDeClave(fecha))
 
   const taller = await requireTaller(req, usuario, tallerId, { permitirInactivo: true })
 
@@ -38,7 +42,7 @@ export const GET = route(async (req: NextRequest) => {
   // Tope de seguridad en cada listado (regla de oro: ningún findMany sin take).
   const [ventas, operariosTaller, ajustesRows] = await Promise.all([
     db.venta.findMany({
-      where: { tallerId: taller.id, fecha: { gte: fecha, lt: finDia(fecha) } },
+      where: { tallerId: taller.id, fecha: { gte: inicioVentana, lt: finVentana } },
       include: { items: true },
       orderBy: { fecha: 'asc' },
       take: 5000,
@@ -149,7 +153,7 @@ export const GET = route(async (req: NextRequest) => {
         total: calculo.totalVentasDia,
         codigos: ventas.map((v) => v.codigo),
       },
-      fecha: fechaCorta(fecha),
+      fecha: etiquetaDeClave(fecha),
       taller,
       porcentajeAdmin,
     })

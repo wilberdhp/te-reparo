@@ -2,8 +2,9 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { db } from '@/lib/db'
 import { route, requireAuth, requireTaller, csv, respuestaCsv } from '@/lib/http'
 import { serializar, D, d2 } from '@/lib/money'
-import { inicioDia, finDia, fechaCorta } from '@/lib/fecha'
+import { inicioDia, finDia, fechaCorta, claveHoy } from '@/lib/fecha'
 import { calcularLiquidacion } from '@/lib/liquidacion'
+import { costoAdicionalEnCUP } from '@/lib/pagos'
 import { ajusteValor } from '@/lib/ajustes'
 import { esServicio } from '@/lib/constantes'
 
@@ -94,7 +95,9 @@ export const GET = route(async (req: NextRequest) => {
       take: 500,
     }),
     db.ajusteLiquidacion.findMany({
-      where: { liquidacion: { tallerId: taller.id, fecha: desde } },
+      // La liquidación se busca por CLAVE del día (medianoche UTC de la
+      // etiqueta), no por el inicio de la ventana civil.
+      where: { liquidacion: { tallerId: taller.id, fecha: claveHoy() } },
       take: 1000,
     }),
   ])
@@ -116,6 +119,12 @@ export const GET = route(async (req: NextRequest) => {
         operarioId: it.operarioId,
         cantidad: it.cantidad,
         subtotalCUP: D(it.subtotalCUP),
+        // Costo interno en CUP con las tasas SNAPSHOT de la venta (igual que
+        // liquidaciones: el pago PORCENTAJE descuenta el costo interno)
+        costoAdicionalCUP: costoAdicionalEnCUP(it.costoAdicional, it.monedaPrecio, {
+          USD: D(v.tasaUSDSnapshot),
+          EUR: D(v.tasaEURSnapshot),
+        }),
         pagoOperarioTipoSnapshot: it.pagoOperarioTipoSnapshot,
         pagoOperarioValorSnapshot: D(it.pagoOperarioValorSnapshot),
       })),

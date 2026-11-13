@@ -9,6 +9,7 @@ import {
 } from '@/lib/validaciones'
 import { serializar, D, type Decimal } from '@/lib/money'
 import { esServicio } from '@/lib/constantes'
+import { ventanaDia } from '@/lib/fecha'
 
 /**
  * GET /api/movimientos?productoId= | ?tallerId=&tipo=&desde=&hasta=
@@ -32,15 +33,16 @@ export const GET = route(async (req: NextRequest) => {
     await requireTaller(req, usuario, tallerId, { permitirInactivo: true })
   }
 
-  const dDesde = desde ? new Date(desde + 'T00:00:00') : null
-  const dHasta = hasta ? new Date(hasta + 'T23:59:59') : null
+  // Filtros por fecha civil en la zona del negocio (no la del servidor)
+  const dDesde = desde ? ventanaDia(desde).inicio : null
+  const dHasta = hasta ? ventanaDia(hasta).fin : null
 
   const movimientos = await db.movimientoInventario.findMany({
     where: {
       producto: { tallerId: tallerId ?? undefined },
       ...(productoId ? { productoId } : {}),
       ...(tipo ? { tipo } : {}),
-      ...(dDesde || dHasta ? { fecha: { ...(dDesde ? { gte: dDesde } : {}), ...(dHasta ? { lte: dHasta } : {}) } } : {}),
+      ...(dDesde || dHasta ? { fecha: { ...(dDesde ? { gte: dDesde } : {}), ...(dHasta ? { lt: dHasta } : {}) } } : {}),
     },
     include: {
       producto: { select: { nombre: true, codigoInterno: true, tipo: true } },

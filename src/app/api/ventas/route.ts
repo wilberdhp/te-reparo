@@ -9,6 +9,7 @@ import { esServicio } from '@/lib/constantes'
 import { siguienteSecuencia, codigoVenta } from '@/lib/codigos'
 import { calcularPagoLinea } from '@/lib/pagos'
 import { paginacionDesde, metaPaginacion } from '@/lib/paginacion'
+import { ventanaDia } from '@/lib/fecha'
 
 /**
  * GET /api/ventas — historial con filtros (taller ADMIN, vendedor, cliente,
@@ -69,15 +70,16 @@ export const GET = route(async (req: NextRequest) => {
 
   const taller = await requireTaller(req, usuario, tallerId, { permitirInactivo: true })
 
-  const dDesde = desde ? new Date(desde + 'T00:00:00') : null
-  const dHasta = hasta ? new Date(hasta + 'T23:59:59') : null
+  // Filtros por fecha civil en la zona del negocio (no la del servidor)
+  const dDesde = desde ? ventanaDia(desde).inicio : null
+  const dHasta = hasta ? ventanaDia(hasta).fin : null
 
   const where = {
     tallerId: taller.id,
     ...(vendedorUsuarioId ? { vendedorUsuarioId } : {}),
     ...(clienteId ? { clienteId } : {}),
     ...(estado ? { estado } : {}),
-    ...(dDesde || dHasta ? { fecha: { ...(dDesde ? { gte: dDesde } : {}), ...(dHasta ? { lte: dHasta } : {}) } } : {}),
+    ...(dDesde || dHasta ? { fecha: { ...(dDesde ? { gte: dDesde } : {}), ...(dHasta ? { lt: dHasta } : {}) } } : {}),
     ...(metodo ? { pagos: { some: { metodo } } } : {}),
     // La búsqueda por código/cliente ahora se resuelve en el servidor para que
     // funcione junto con la paginación (antes filtraba la página en el cliente).
